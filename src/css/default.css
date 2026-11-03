@@ -82,6 +82,8 @@ button, input[type=submit], input[type=reset], input[type=button], input[type=fi
 }
 select { padding: 1.5px 4px; }
 input[type=checkbox], input[type=radio] { padding: 0; margin: 3px 3px 3px 4px; }
+input[type=checkbox] { border-radius: 2px; }
+input[type=radio] { border-radius: 50%; }
 input[type=range] { padding: 0; border: 0; background-color: transparent; margin: 2px; }
 input[type=color] { padding: 1px; background-color: #e9e9ed; }
 textarea { padding: 1px; font-family: monospace; }

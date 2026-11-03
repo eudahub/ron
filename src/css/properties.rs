@@ -111,6 +111,9 @@ macro_rules! properties {
 properties! {
     Display "display" Float "float" Clear "clear" Position "position"
     Top "top" Right "right" Bottom "bottom" Left "left"
+    BorderTopLeftRadius "border-top-left-radius" BorderTopRightRadius "border-top-right-radius"
+    BorderBottomRightRadius "border-bottom-right-radius"
+    BorderBottomLeftRadius "border-bottom-left-radius"
     Color "color" Fill "fill" BackgroundColor "background-color" BackgroundImage "background-image"
     BackgroundRepeat "background-repeat" BackgroundPositionX "background-position-x"
     BackgroundPositionY "background-position-y"
@@ -383,6 +386,14 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
         | P::PaddingLeft
         | P::TextIndent
         | P::BorderSpacing => non_negative_or_any(length(), prop),
+        // Of the two sizes that a corner can have, the first stands for both.
+        P::BorderTopLeftRadius
+        | P::BorderTopRightRadius
+        | P::BorderBottomRightRadius
+        | P::BorderBottomLeftRadius => {
+            let first = split_words(text).first().copied().unwrap_or("");
+            non_negative_or_any(parse_length_or_math(first), prop)
+        }
         P::BorderTopWidth | P::BorderRightWidth | P::BorderBottomWidth | P::BorderLeftWidth => {
             parse_border_width(text)
         }
@@ -429,7 +440,14 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
 fn non_negative_or_any(value: Option<Value>, prop: Prop) -> Option<Value> {
     let padding = matches!(
         prop,
-        Prop::PaddingTop | Prop::PaddingRight | Prop::PaddingBottom | Prop::PaddingLeft
+        Prop::PaddingTop
+            | Prop::PaddingRight
+            | Prop::PaddingBottom
+            | Prop::PaddingLeft
+            | Prop::BorderTopLeftRadius
+            | Prop::BorderTopRightRadius
+            | Prop::BorderBottomRightRadius
+            | Prop::BorderBottomLeftRadius
     );
     match value {
         Some(Value::Length(length)) if padding && length.value < 0.0 => None,
@@ -520,6 +538,10 @@ fn physical_name(name: &str) -> Option<&'static str> {
         "min-block-size" => "min-height",
         "max-inline-size" => "max-width",
         "max-block-size" => "max-height",
+        "border-start-start-radius" => "border-top-left-radius",
+        "border-start-end-radius" => "border-top-right-radius",
+        "border-end-end-radius" => "border-bottom-right-radius",
+        "border-end-start-radius" => "border-bottom-left-radius",
         "border-inline-start" => "border-left",
         "border-inline-end" => "border-right",
         "border-block-start" => "border-top",
@@ -543,6 +565,12 @@ fn physical_name(name: &str) -> Option<&'static str> {
 fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
     use Prop as P;
     Some(match name {
+        "border-radius" => &[
+            P::BorderTopLeftRadius,
+            P::BorderTopRightRadius,
+            P::BorderBottomRightRadius,
+            P::BorderBottomLeftRadius,
+        ],
         "margin-inline" => &[P::MarginLeft, P::MarginRight],
         "margin-block" => &[P::MarginTop, P::MarginBottom],
         "padding-inline" => &[P::PaddingLeft, P::PaddingRight],
@@ -670,6 +698,10 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
     match name {
         "margin" | "inset" | "padding" | "border-width" | "border-style" | "border-color" => {
             expand_sides(longhands, text, push)
+        }
+        // What comes after a slash is the other size of the corners, which stay round.
+        "border-radius" => {
+            expand_sides(longhands, text.split('/').next().unwrap_or("").trim(), push)
         }
         "margin-inline"
         | "margin-block"

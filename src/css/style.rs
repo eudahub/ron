@@ -110,6 +110,8 @@ pub struct ComputedStyle {
     pub uses_view_width: bool,
     pub uses_view_height: bool,
     pub background_color: Color,
+    /// The rounding of the corners: `top` is the top left one, and so on around the box.
+    pub border_radius: Sides<Size>,
     /// What a style sheet says of the inside of SVG shapes, transparent for `none`. Whatever is
     /// left to come from the parent or from the attributes of the SVG is for what draws it.
     pub fill: Option<Color>,
@@ -191,6 +193,7 @@ impl ComputedStyle {
             text_decoration: 0,
             uses_view_width: false,
             uses_view_height: false,
+            border_radius: Sides::all(Size::Px(0.0)),
             background_color: Color::TRANSPARENT,
             fill: None,
             background_image: None,
@@ -621,6 +624,10 @@ fn apply(
         P::MarginRight => size!(margin.right),
         P::MarginBottom => size!(margin.bottom),
         P::MarginLeft => size!(margin.left),
+        P::BorderTopLeftRadius => size!(border_radius.top),
+        P::BorderTopRightRadius => size!(border_radius.right),
+        P::BorderBottomRightRadius => size!(border_radius.bottom),
+        P::BorderBottomLeftRadius => size!(border_radius.left),
         P::PaddingTop => size!(padding.top),
         P::PaddingRight => size!(padding.right),
         P::PaddingBottom => size!(padding.bottom),

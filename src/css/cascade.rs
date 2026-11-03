@@ -16,7 +16,7 @@ use super::properties::{
 use super::selector::{
     Combinator, ElementNames, MatchContext, PseudoClass, Selector, SimpleSelector, TypeSelector,
 };
-use super::style::{ComputedStyle, blockified, compute};
+use super::style::{ComputedStyle, Size, blockified, compute};
 use super::stylesheet::{Declaration, StyleRule, Stylesheet};
 use super::values::{Color, Length, Unit, parse_length};
 use super::variables::{CustomProperties, merged, substitute, uses_variables};
@@ -439,6 +439,10 @@ impl Styles {
             );
             style.custom_properties.clone_from(&old.custom_properties);
             style.display = old.display;
+            // The rounding of a form control comes from outside of the rules.
+            if style.border_radius.top == Size::Px(0.0) {
+                style.border_radius = old.border_radius;
+            }
             if ComputedStyle::inheriting(&style) != ComputedStyle::inheriting(old) {
                 return false;
             }
@@ -623,6 +627,32 @@ pub fn restyle<Sheet: Borrow<Stylesheet>>(
     styles.limited |= old.limited;
     styles.conditions = old.conditions;
     styles.matches = Some(matches);
+}
+
+/// A form control keeps the rounded look of the system until the page gives it a border of its own.
+fn round_native_control(style: &mut ComputedStyle) {
+    const NATIVE_RADIUS: Size = Size::Px(4.0);
+    const NATIVE_BORDER: Color = Color::rgb(0x8f, 0x8f, 0x9d);
+    const NATIVE_DISABLED_BORDER: Color = Color::rgb(0xc0, 0xc0, 0xc8);
+    let radius = style.border_radius;
+    let no_radius = [radius.top, radius.right, radius.bottom, radius.left]
+        .iter()
+        .all(|corner| *corner == Size::Px(0.0));
+    let native_side = |width: f32, color: Color| {
+        width == 1.0 && (color == NATIVE_BORDER || color == NATIVE_DISABLED_BORDER)
+    };
+    let (widths, colors) = (style.border_width, style.border_color);
+    if no_radius
+        && native_side(widths.top, colors.top)
+        && native_side(widths.right, colors.right)
+        && native_side(widths.bottom, colors.bottom)
+        && native_side(widths.left, colors.left)
+    {
+        style.border_radius.top = NATIVE_RADIUS;
+        style.border_radius.right = NATIVE_RADIUS;
+        style.border_radius.bottom = NATIVE_RADIUS;
+        style.border_radius.left = NATIVE_RADIUS;
+    }
 }
 
 /// How far styles have been computed for a document that is still arriving.
@@ -978,6 +1008,12 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
             viewport,
         );
         style.custom_properties = customs;
+        if matches!(
+            document.tag(id),
+            Tag::Input | Tag::Select | Tag::Textarea | Tag::Button
+        ) {
+            round_native_control(&mut style);
+        }
         if parent == document.root() {
             style.display = blockified(style.display);
             root_font_size = Some(style.font_size);
