@@ -1,6 +1,7 @@
 //! CSS: parsing, selector matching, the cascade and computed styles.
 
 mod cascade;
+mod fontface;
 mod grid;
 mod math;
 mod media;
@@ -22,6 +23,7 @@ pub use cascade::{
     SheetSource, StyleProgress, Styles, compute_styles, document_sheet_sources,
     document_stylesheets, extend_styles, restyle,
 };
+pub use fontface::{FontFace, FontSource};
 pub use grid::{GridArea, GridAreas, GridLine, GridTrack, TrackSize};
 pub use math::{CalcRef, CalcSize, Linear};
 pub use media::{Viewport, matches_media};

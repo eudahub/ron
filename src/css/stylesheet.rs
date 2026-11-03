@@ -1,12 +1,15 @@
 //! Stylesheets, read as CSS Syntax requires: errors drop one rule or declaration, and
 //! the input ending inside a block closes it.
 
+use super::fontface::{FontFace, parse_family, parse_italic, parse_sources, parse_weight};
 use super::media::{Viewport, matches_media};
 use super::selector::Selector;
 use super::tokenizer::{CssToken, CssTokenKind as K, tokenize, unescape};
 
 /// Deeper `@media` nesting is skipped, which bounds repeated scans of the same tokens.
 const MAX_AT_RULE_NESTING: usize = 8;
+/// More fonts in one sheet are left out.
+const MAX_FONT_FACES: usize = 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Declaration {
@@ -45,6 +48,8 @@ pub struct Stylesheet {
     media_parents: Vec<Option<u32>>,
     /// The targets of `@import` rules, which the caller may fetch.
     pub imports: Vec<Box<str>>,
+    /// The fonts of `@font-face` rules, which the caller may fetch.
+    pub font_faces: Vec<FontFace>,
 }
 
 impl Stylesheet {
@@ -168,6 +173,9 @@ impl Stylesheet {
             // Conditions are not evaluated yet; what cannot be used is ignored later anyway.
             let inner = &tokens[block + 1..end.min(tokens.len())];
             self.read_rules(inner, source, place, depth + 1, false);
+        } else if keyword == "font-face" {
+            let inner = &tokens[block + 1..end.min(tokens.len())];
+            self.read_font_face(inner, source, place);
         } else if keyword == "layer" && depth < MAX_AT_RULE_NESTING {
             // The layers stay in the order they come in, whatever order `@layer a, b;` gives them.
             let inner = &tokens[block + 1..end.min(tokens.len())];
@@ -178,6 +186,38 @@ impl Stylesheet {
             self.read_rules(inner, source, place, depth + 1, false);
         }
         end + 1
+    }
+
+    /// Notes a font, if it has a name and a source that can be used. The last of a descriptor counts.
+    fn read_font_face(&mut self, tokens: &[CssToken], source: &str, place: Place) {
+        if self.font_faces.len() >= MAX_FONT_FACES {
+            return;
+        }
+        let (mut family, mut sources) = (None, Vec::new());
+        let (mut weight, mut italic) = ((400, 400), false);
+        for declaration in read_declarations(tokens, source) {
+            let value = source
+                .get(declaration.value_start as usize..declaration.value_end as usize)
+                .unwrap_or("");
+            match &*declaration.name {
+                "font-family" => family = parse_family(value).or(family),
+                "src" => sources = parse_sources(value),
+                "font-weight" => weight = parse_weight(value).unwrap_or(weight),
+                "font-style" => italic = parse_italic(value),
+                _ => {}
+            }
+        }
+        if let Some(family) = family
+            && !sources.is_empty()
+        {
+            self.font_faces.push(FontFace {
+                family,
+                sources,
+                weight,
+                italic,
+                media: place.media,
+            });
+        }
     }
 
     fn read_import(&mut self, prelude: &[CssToken], source: &str) {
