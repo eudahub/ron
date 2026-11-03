@@ -24,7 +24,9 @@ adjacent text nodes, and names of unknown elements keep the case they were writt
 At most 512 elements stay open, with further ones becoming siblings. Repairing misnested
 formatting can leave the tree deeper than that, so code walking it must not recurse. A
 document stops growing at about 16 million nodes or 4 GiB of source; `is_truncated` reports
-that.
+that. Reopening and repairing formatting clones elements, up to 1000 clones plus one per 4
+bytes of input. Beyond that text is still shown but loses the formatting that would have
+needed a clone, and `is_formatting_limited` reports it.
 
 ## HTML tokenizer
 

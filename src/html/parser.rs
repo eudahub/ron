@@ -15,6 +15,10 @@ const MAX_DEPTH: usize = 512;
 const MAX_ACTIVE_FORMATTING: usize = 64;
 /// The tree stops growing here, so that small hostile input cannot exhaust memory.
 const MAX_NODES: usize = 1 << 24;
+/// Cloned elements allowed before any input, then per input byte. Ordinary pages clone
+/// almost nothing, while hostile ones could otherwise reach a hundred times their size.
+const FREE_CLONES: usize = 1000;
+const INPUT_BYTES_PER_CLONE: usize = 4;
 /// One token can create this many nodes at most.
 const NODES_PER_TOKEN: usize = 1024;
 /// Spans are stored in 32 bits.
@@ -70,6 +74,10 @@ pub struct Parser {
     scanner: Scanner,
     finished: bool,
     truncated: bool,
+    /// Bytes of input processed so far, which does not depend on the sizes of the pieces.
+    processed: usize,
+    clones: usize,
+    formatting_limited: bool,
     mode: Mode,
     open: Vec<NodeId>,
     active: Vec<Active>,
@@ -92,6 +100,9 @@ impl Parser {
             scanner: Scanner::default(),
             finished: false,
             truncated: false,
+            processed: 0,
+            clones: 0,
+            formatting_limited: false,
             mode: Mode::Initial,
             open: Vec::new(),
             active: Vec::new(),
@@ -154,6 +165,12 @@ impl Parser {
         self.truncated
     }
 
+    /// Whether the clone budget ran out, so that some text lost its formatting.
+    #[must_use]
+    pub fn is_formatting_limited(&self) -> bool {
+        self.formatting_limited
+    }
+
     fn process_tokens(&mut self) {
         while !self.truncated {
             if self.document.node_count() + NODES_PER_TOKEN > MAX_NODES {
@@ -169,6 +186,7 @@ impl Parser {
 
     fn process(&mut self, token: Token) {
         let Token { kind, mut span } = token;
+        self.processed = span.end;
         let skip = std::mem::replace(&mut self.skip_newline, NewlineSkip::No);
         if skip != NewlineSkip::No && matches!(kind, TokenKind::Text | TokenKind::RawText) {
             let source = &self.document.source;
@@ -718,6 +736,10 @@ impl Parser {
     /// The adoption agency algorithm: repairs misnested formatting such as `<b><p></b>`.
     fn adoption_agency(&mut self, token: TagToken) {
         let subject = token.tag;
+        if !self.has_clone_budget() {
+            self.any_other_end_tag(token);
+            return;
+        }
         if self.current_tag() == subject && !self.active.contains(&Active::Element(self.current()))
         {
             self.pop();
@@ -776,7 +798,7 @@ impl Parser {
                     self.open.remove(index);
                     continue;
                 };
-                let clone = self.document.clone_element(node);
+                let clone = self.clone_element(node);
                 self.document.set_open(node, false);
                 self.document.set_open(clone, true);
                 self.active[entry] = Active::Element(clone);
@@ -790,7 +812,7 @@ impl Parser {
             }
             self.document.detach(last);
             self.document.append(common_ancestor, last);
-            let clone = self.document.clone_element(formatting);
+            let clone = self.clone_element(formatting);
             while let Some(child) = self.document.first_child(furthest) {
                 self.document.detach(child);
                 self.document.append(clone, child);
@@ -868,14 +890,30 @@ impl Parser {
             let Active::Element(element) = self.active[index] else {
                 continue;
             };
+            if !self.has_clone_budget() {
+                // The remaining entries are all closed: their formatting ends here.
+                self.active.truncate(index);
+                return;
+            }
             if self.open.len() >= MAX_DEPTH {
                 self.pop();
             }
-            let clone = self.document.clone_element(element);
+            let clone = self.clone_element(element);
             self.document.append(self.current(), clone);
             self.push_open(clone);
             self.active[index] = Active::Element(clone);
         }
+    }
+
+    fn has_clone_budget(&mut self) -> bool {
+        let allowed = FREE_CLONES + self.processed / INPUT_BYTES_PER_CLONE;
+        self.formatting_limited |= self.clones >= allowed;
+        self.clones < allowed
+    }
+
+    fn clone_element(&mut self, id: NodeId) -> NodeId {
+        self.clones += 1;
+        self.document.clone_element(id)
     }
 
     fn active_formatting_index(&self, tag: Tag) -> Option<usize> {

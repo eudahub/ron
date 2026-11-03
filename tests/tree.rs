@@ -377,6 +377,36 @@ fn hostile_repetitions_stay_bounded() {
     }
 }
 
+#[test]
+fn clone_budget_stops_hostile_growth_but_keeps_the_text() {
+    let source: String = (0..30_000).map(|i| format!("<p><b a={i}>x")).collect();
+    let parser = parse_in_pieces(&source, || 1400);
+    assert!(parser.is_formatting_limited());
+    let document = parser.document();
+    let bytes = document.source_capacity_bytes() + document.nodes_capacity_bytes();
+    assert!(
+        bytes <= 20 * source.len(),
+        "{bytes} bytes for {}",
+        source.len()
+    );
+    let texts = document
+        .descendants(document.root())
+        .filter(|&id| document.kind(id) == NodeKind::Text)
+        .count();
+    assert_eq!(texts, 30_000);
+    assert_links_agree(document);
+    assert_eq!(tree(document), tree(&parse(&source)), "split independence");
+}
+
+#[test]
+fn ordinary_unclosed_formatting_stays_within_the_budget() {
+    let source = "<p><font size=2><b><i>a short line of text</p>".repeat(5000);
+    let mut parser = Parser::new();
+    parser.feed(&source);
+    parser.finish();
+    assert!(!parser.is_formatting_limited());
+}
+
 /// Checks real pages when `RON_CORPUS_DIR` names a directory of UTF-8 `.html` files:
 /// `RON_CORPUS_DIR=... cargo test --release -- --ignored`
 #[test]
@@ -392,6 +422,10 @@ fn real_pages_stay_small_and_independent_of_splitting() {
         let source = std::fs::read_to_string(&path).unwrap();
         let whole = parse(&source);
         assert_links_agree(&whole);
+        let mut parser = Parser::new();
+        parser.feed(&source);
+        parser.finish();
+        assert!(!parser.is_formatting_limited(), "{path:?}");
         let bytes = whole.source_capacity_bytes() + whole.nodes_capacity_bytes();
         assert!(bytes <= 3 * source.len(), "{path:?} takes {bytes} bytes");
         for size in [1, 1400, 65536] {
