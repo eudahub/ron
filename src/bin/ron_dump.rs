@@ -1,5 +1,6 @@
 //! Inspects how a UTF-8 HTML file is parsed: its tokens, token statistics with `--stats`,
-//! the tree with `--tree`, or the memory used to build it with `--memory`.
+//! the tree with `--tree`, the memory used to build it with `--memory`, or how the CSS
+//! of a stylesheet or of a page's `<style>` elements parses with `--css`.
 //! With `--chunk N` the file goes through the stream tokenizer or parser in pieces of N bytes.
 
 use std::collections::BTreeMap;
@@ -7,11 +8,13 @@ use std::io::Read;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use ron::css::Stylesheet;
 use ron::html::{
-    Document, NodeKind, Parser, StreamTokenizer, Token, TokenKind, Tokenizer, attributes, tag_name,
+    Document, NodeKind, Parser, StreamTokenizer, Tag, Token, TokenKind, Tokenizer, attributes,
+    parse, tag_name,
 };
 
-const USAGE: &str = "usage: ron-dump [--stats | --tree | --memory] [--chunk BYTES] FILE";
+const USAGE: &str = "usage: ron-dump [--stats | --tree | --memory | --css] [--chunk BYTES] FILE";
 
 /// Calls `visit` with consecutive pieces of at most `size` bytes, cut at character boundaries.
 fn for_each_piece(source: &str, size: usize, mut visit: impl FnMut(&str)) {
@@ -167,12 +170,42 @@ fn print_memory(path: &str, chunk: Option<usize>) -> Result<(), String> {
     Ok(())
 }
 
+fn print_css(source: &str, path: &str) {
+    let sheets: Vec<String> = if path.ends_with(".css") {
+        vec![source.to_owned()]
+    } else {
+        let document = parse(source);
+        document
+            .descendants(document.root())
+            .filter(|&id| document.tag(id) == Tag::Style)
+            .filter_map(|id| document.first_child(id))
+            .map(|text| document.decoded_text(text).into_owned())
+            .collect()
+    };
+    let started = Instant::now();
+    let parsed: Vec<Stylesheet> = sheets
+        .iter()
+        .map(|sheet| Stylesheet::parse(sheet))
+        .collect();
+    let elapsed = started.elapsed();
+    let count = |measure: fn(&Stylesheet) -> usize| parsed.iter().map(measure).sum::<usize>();
+    println!("stylesheets {}", parsed.len());
+    println!("bytes {}", sheets.iter().map(String::len).sum::<usize>());
+    println!("rules {}", count(|sheet| sheet.rules.len()));
+    let selectors = count(|sheet| sheet.rules.iter().map(|rule| rule.selectors.len()).sum());
+    println!("selectors {selectors}");
+    let declarations = count(|sheet| sheet.rules.iter().map(|rule| rule.declarations.len()).sum());
+    println!("declarations {declarations}");
+    println!("time {elapsed:?}");
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Output {
     Tokens,
     Stats,
     Tree,
     Memory,
+    Css,
 }
 
 fn main() -> ExitCode {
@@ -185,6 +218,7 @@ fn main() -> ExitCode {
             "--stats" => output = Output::Stats,
             "--tree" => output = Output::Tree,
             "--memory" => output = Output::Memory,
+            "--css" => output = Output::Css,
             "--chunk" => {
                 chunk = arguments.next().and_then(|size| size.parse().ok());
                 if chunk.is_none_or(|size: usize| size == 0) {
@@ -227,6 +261,7 @@ fn main() -> ExitCode {
         Output::Tokens => print_tokens(&source, chunk),
         Output::Stats => print_stats(&source, chunk),
         Output::Tree => print_parsed_tree(&source, chunk),
+        Output::Css => print_css(&source, &path),
         Output::Memory => {}
     }
     ExitCode::SUCCESS

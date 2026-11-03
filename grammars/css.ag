@@ -1,0 +1,89 @@
+// CSS tokens and selectors. The lexer accepts every valid UTF-8 input. The LALR(1) grammar
+// decides whether a selector list is valid, which matters because one invalid selector
+// voids its whole rule. Blocks and declarations recover from errors as CSS Syntax requires,
+// so the stylesheet parser handles those. It also removes comments, and the white space
+// that is not significant, before the tokens reach this grammar.
+grammar Css;
+
+options { parser = LALR; lookahead = 1; ast = explicit; }
+
+node selectorList : first=complexSelector rest=commaSelector* EOF;
+inline commaSelector : COMMA value=complexSelector;
+node complexSelector : first=compoundSelector rest=combined*;
+inline combined : combinator=combinator value=compoundSelector;
+inline combinator : WS | GT | PLUS | TILDE;
+node compoundSelector
+    : type=typeSelector tail=simpleSelector*
+    | head=simpleSelector tail=simpleSelector*
+    ;
+inline typeSelector : IDENT | STAR;
+inline simpleSelector : HASH | DOT IDENT | attributeSelector | pseudoSelector;
+node attributeSelector
+    : LBRACKET name=IDENT RBRACKET
+    | LBRACKET name=IDENT match=matcher value=attributeValue flag=IDENT? RBRACKET
+    ;
+inline matcher : EQUALS | INCLUDES | DASH_MATCH | PREFIX_MATCH | SUFFIX_MATCH | SUBSTRING_MATCH;
+inline attributeValue : IDENT | STRING;
+node pseudoSelector
+    : COLON name=IDENT
+    | COLON COLON element=IDENT
+    | COLON function=FUNCTION arguments=argument* RPAREN
+    ;
+inline argument
+    : LPAREN nested=argument* RPAREN
+    | FUNCTION nested=argument* RPAREN
+    | anyToken
+    ;
+inline anyToken
+    : WS | IDENT | AT_KEYWORD | HASH | STRING | URL | NUMBER | PERCENTAGE | DIMENSION | CDO | CDC
+    | COLON | SEMICOLON | COMMA | LBRACKET | RBRACKET | LBRACE | RBRACE | DOT | GT | PLUS | TILDE
+    | STAR | EQUALS | INCLUDES | DASH_MATCH | PREFIX_MATCH | SUFFIX_MATCH | SUBSTRING_MATCH | DELIM
+    | COMMENT
+    ;
+
+fragment NEWLINE : '\n' | '\r\n' | '\r' | '\f';
+fragment HEX : [0-9a-fA-F];
+fragment ESCAPE : '\\' (~[0-9a-fA-F\r\n\f] | HEX HEX? HEX? HEX? HEX? HEX? [ \t\r\n\f]?);
+fragment NAME_START : [a-zA-Z_] | ~[\u0000-\u007f] | ESCAPE;
+fragment NAME_CHAR : NAME_START | [0-9\-];
+fragment NAME : '--' NAME_CHAR* | '-'? NAME_START NAME_CHAR*;
+fragment NUM : [+\-]? ([0-9]+ ('.' [0-9]+)? | '.' [0-9]+) ([eE] [+\-]? [0-9]+)?;
+
+WS : [ \t\r\n\f]+;
+COMMENT : '/*' (~[*] | '*'+ ~[*/])* ('*'+ '/' | '*'*);
+IDENT : NAME;
+FUNCTION : NAME '(';
+URL
+    : [uU] [rR] [lL] '(' [ \t\r\n\f]* (~["'() \t\r\n\f\\] | ESCAPE)* [ \t\r\n\f]* ')'?
+    ;
+AT_KEYWORD : '@' NAME;
+HASH : '#' NAME_CHAR+;
+STRING : '"' (~["\\\r\n\f] | '\\' (~[\r\n\f] | NEWLINE)?)* '"'?
+       | '\'' (~['\\\r\n\f] | '\\' (~[\r\n\f] | NEWLINE)?)* '\''?
+       ;
+NUMBER : NUM;
+PERCENTAGE : NUM '%';
+DIMENSION : NUM NAME;
+CDO : '<!--';
+CDC : '-->';
+COLON : ':';
+SEMICOLON : ';';
+COMMA : ',';
+LBRACKET : '[';
+RBRACKET : ']';
+LPAREN : '(';
+RPAREN : ')';
+LBRACE : '{';
+RBRACE : '}';
+DOT : '.';
+GT : '>';
+PLUS : '+';
+TILDE : '~';
+STAR : '*';
+EQUALS : '=';
+INCLUDES : '~=';
+DASH_MATCH : '|=';
+PREFIX_MATCH : '^=';
+SUFFIX_MATCH : '$=';
+SUBSTRING_MATCH : '*=';
+DELIM : ~[\u0000] | '\u0000';

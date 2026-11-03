@@ -3,4 +3,5 @@
 // The generated parser refers to the runtime modules through these crate paths.
 use agas_runtime::{ast, lexer, lr};
 
+pub mod css;
 pub mod html;

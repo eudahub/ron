@@ -156,7 +156,8 @@ impl Document {
     }
 
     /// The child in front of `id`.
-    pub(super) fn previous_sibling(&self, id: NodeId) -> Option<NodeId> {
+    #[must_use]
+    pub fn previous_sibling(&self, id: NodeId) -> Option<NodeId> {
         let node = self.node(id);
         let parent = Self::link(node.parent)?;
         (self.node(parent).first_child != id.0)

@@ -3,7 +3,8 @@ Memory-safe web engine library in Rust. It takes UTF-8 text, never opens files o
 sockets itself, and has no GUI, so a browser and a crawler can share it. The browser
 built on it is a separate project, `ron-browser`.
 
-The current stage is HTML parsing into a document tree; there is no CSS or rendering yet.
+The current stage is parsing HTML and CSS and matching selectors; there is no cascade or
+rendering yet.
 
 ## HTML parser
 
@@ -30,6 +31,20 @@ document stops growing at about 16 million nodes or 4 GiB of source; `is_truncat
 that. Reopening and repairing formatting clones elements, up to 1000 clones plus one per 4
 bytes of input. Beyond that text is still shown but loses the formatting that would have
 needed a clone, and `is_formatting_limited` reports it.
+
+## CSS parser
+
+`ron::css::Stylesheet::parse` reads a stylesheet into rules with their selectors and
+declarations. It accepts every input: as CSS Syntax requires, an error drops one rule or
+declaration, and the input ending inside a block closes it. Values stay as written in the
+source. `@media` conditions and `@import` targets are kept but not evaluated, and `@supports`
+content is read as if its condition held. Nested style rules are skipped.
+
+`grammars/css.ag` holds the tokens and an LALR(1) grammar for selector lists, which decides
+validity, since one invalid selector voids its whole rule. `ron::css::matches` tests an
+element against a selector. It handles type, class, id and attribute selectors, all four
+combinators and the structural pseudo-classes, `:not()`, `:is()` and `:where()`. States of a
+live page, such as `:hover`, are valid but do not match yet, and `:has()` counts as invalid.
 
 ## HTML tokenizer
 
@@ -58,17 +73,19 @@ target/release/ron-dump --stats page.html  # token counts and tokenizing time
 target/release/ron-dump --chunk 1400 page.html  # the same through the stream tokenizer
 target/release/ron-dump --tree page.html   # the document tree
 target/release/ron-dump --memory page.html # memory and time while parsing as it is read
+target/release/ron-dump --css page.html    # how a stylesheet or a page's <style> parses
 cargo test
 RON_CORPUS_DIR=pages cargo test --release -- --ignored  # also real .html files from a directory
 RON_HTML5LIB_DIR=dat cargo test --release --test html5lib -- --ignored --nocapture
 ```
 
-`generated/html_parser.rs` is generated and checked in, so building needs only Cargo.
-After changing the grammar, regenerate it with `ag` from
+`generated/html_parser.rs` and `generated/css_parser.rs` are generated and checked in, so
+building needs only Cargo. After changing a grammar, regenerate them with `ag` from
 [Borsuk](https://github.com/parstools/borsuk):
 
 ```sh
 ag --emit-rust-parser generated/html_parser.rs grammars/html.ag
+ag --emit-rust-parser generated/css_parser.rs grammars/css.ag
 ```
 
 `RON_HTML5LIB_DIR` names a directory of html5lib tree construction `.dat` files. They moved
