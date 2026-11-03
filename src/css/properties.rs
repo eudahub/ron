@@ -39,6 +39,23 @@ keywords!(BackgroundRepeat {
     Repeat "repeat" RepeatX "repeat-x" RepeatY "repeat-y" NoRepeat "no-repeat"
 });
 keywords!(Clear { None "none" Left "left" Right "right" Both "both" });
+keywords!(FlexDirection {
+    Row "row" RowReverse "row-reverse" Column "column" ColumnReverse "column-reverse"
+});
+keywords!(FlexWrap { Nowrap "nowrap" Wrap "wrap" WrapReverse "wrap-reverse" });
+keywords!(JustifyContent {
+    Normal "normal" Start "start" FlexStart "flex-start" Left "left" End "end" FlexEnd "flex-end"
+    Right "right" Center "center" SpaceBetween "space-between" SpaceAround "space-around"
+    SpaceEvenly "space-evenly"
+});
+keywords!(
+    /// For `align-items` and `align-self`, of which only the second can be `auto`.
+    FlexAlign {
+        Auto "auto" Normal "normal" Stretch "stretch" Start "start" FlexStart "flex-start"
+        SelfStart "self-start" End "end" FlexEnd "flex-end" SelfEnd "self-end" Center "center"
+        Baseline "baseline"
+    }
+);
 keywords!(Position {
     Static "static" Relative "relative" Absolute "absolute" Fixed "fixed" Sticky "sticky"
 });
@@ -115,6 +132,10 @@ properties! {
     BorderBottomColor "border-bottom-color" BorderLeftColor "border-left-color"
     Width "width" Height "height" MinWidth "min-width" MinHeight "min-height"
     MaxWidth "max-width" MaxHeight "max-height"
+    FlexDirection "flex-direction" FlexWrap "flex-wrap" JustifyContent "justify-content"
+    AlignItems "align-items" AlignSelf "align-self" FlexGrow "flex-grow"
+    FlexShrink "flex-shrink" FlexBasis "flex-basis" Order "order"
+    RowGap "row-gap" ColumnGap "column-gap"
 }
 
 /// `text-decoration-line` bits.
@@ -152,6 +173,10 @@ pub(super) enum Value {
     BorderCollapse(BorderCollapse),
     Overflow(Overflow),
     VerticalAlign(VerticalAlign),
+    FlexDirection(FlexDirection),
+    FlexWrap(FlexWrap),
+    JustifyContent(JustifyContent),
+    FlexAlign(FlexAlign),
     /// `larger` or `smaller` when true or false.
     FontRelative(bool),
 }
@@ -273,6 +298,24 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
         P::VerticalAlign => VerticalAlign::parse(text)
             .map(Value::VerticalAlign)
             .or_else(length),
+        P::FlexDirection => FlexDirection::parse(text).map(Value::FlexDirection),
+        P::FlexWrap => FlexWrap::parse(text).map(Value::FlexWrap),
+        P::JustifyContent => JustifyContent::parse(text).map(Value::JustifyContent),
+        P::AlignItems | P::AlignSelf => FlexAlign::parse(text).map(Value::FlexAlign),
+        P::FlexGrow | P::FlexShrink => text
+            .parse()
+            .ok()
+            .filter(|number: &f32| number.is_finite() && *number >= 0.0)
+            .map(Value::Number),
+        P::Order => text
+            .parse::<i32>()
+            .ok()
+            .map(|order| Value::Number(order as f32)),
+        P::FlexBasis => empty("auto").or_else(|| empty("content")).or_else(length),
+        P::RowGap | P::ColumnGap => text
+            .eq_ignore_ascii_case("normal")
+            .then_some(Value::Number(0.0))
+            .or_else(|| non_negative_or_any(length(), prop)),
         P::Top
         | P::Right
         | P::Bottom
@@ -460,6 +503,9 @@ fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
             P::FontFamily,
         ],
         "list-style" => &[P::ListStyleType, P::ListStyleImage],
+        "flex" => &[P::FlexGrow, P::FlexShrink, P::FlexBasis],
+        "flex-flow" => &[P::FlexDirection, P::FlexWrap],
+        "gap" | "grid-gap" => &[P::RowGap, P::ColumnGap],
         _ => return None,
     })
 }
@@ -501,8 +547,109 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
         },
         "font" => expand_font(text, push),
         "list-style" => expand_list_style(text, push),
+        "flex" => expand_flex(text, push),
+        "flex-flow" => expand_flex_flow(text, push),
+        "gap" | "grid-gap" => expand_gap(text, push),
         _ => false,
     }
+}
+
+/// `flex` is `none`, `auto`, or up to two numbers and a size. A number alone means no size of its
+/// own, so that what is free gets shared out from nothing, unlike the initial values.
+fn expand_flex(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let mut set = |grow: f32, shrink: f32, basis: Value| {
+        push(Prop::FlexGrow, Value::Number(grow));
+        push(Prop::FlexShrink, Value::Number(shrink));
+        push(Prop::FlexBasis, basis);
+    };
+    let words = split_words(text);
+    match words.as_slice() {
+        [word] if word.eq_ignore_ascii_case("none") => {
+            set(0.0, 0.0, Value::Empty);
+            return true;
+        }
+        [word] if word.eq_ignore_ascii_case("auto") => {
+            set(1.0, 1.0, Value::Empty);
+            return true;
+        }
+        _ => {}
+    }
+    let number = |word: &str| {
+        word.parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+    };
+    let (grow, shrink, basis) = match words.as_slice() {
+        [one] => match number(one) {
+            Some(grow) => (grow, 1.0, None),
+            None => (1.0, 1.0, Some(*one)),
+        },
+        [first, second] => match (number(first), number(second)) {
+            (Some(grow), Some(shrink)) => (grow, shrink, None),
+            (Some(grow), None) => (grow, 1.0, Some(*second)),
+            (None, Some(grow)) => (grow, 1.0, Some(*first)),
+            (None, None) => return false,
+        },
+        [first, second, third] => match (number(first), number(second), number(third)) {
+            (Some(grow), Some(shrink), _) => (grow, shrink, Some(*third)),
+            (None, Some(grow), Some(shrink)) => (grow, shrink, Some(*first)),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let basis = match basis {
+        Some(word) => match parse_longhand(Prop::FlexBasis, word) {
+            Some(basis) => basis,
+            None => return false,
+        },
+        None => match parse_length("0", false) {
+            Some(zero) => Value::Length(zero),
+            None => return false,
+        },
+    };
+    set(grow, shrink, basis);
+    true
+}
+
+fn expand_flex_flow(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let mut direction = None;
+    let mut wrap = None;
+    for word in split_words(text) {
+        if let Some(found) = FlexDirection::parse(word) {
+            direction = Some(found);
+        } else if let Some(found) = FlexWrap::parse(word) {
+            wrap = Some(found);
+        } else {
+            return false;
+        }
+    }
+    push(
+        Prop::FlexDirection,
+        Value::FlexDirection(direction.unwrap_or(FlexDirection::Row)),
+    );
+    push(
+        Prop::FlexWrap,
+        Value::FlexWrap(wrap.unwrap_or(FlexWrap::Nowrap)),
+    );
+    true
+}
+
+fn expand_gap(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let words = split_words(text);
+    let (row, column) = match words.as_slice() {
+        [both] => (*both, *both),
+        [row, column] => (*row, *column),
+        _ => return false,
+    };
+    let (Some(row), Some(column)) = (
+        parse_longhand(Prop::RowGap, row),
+        parse_longhand(Prop::ColumnGap, column),
+    ) else {
+        return false;
+    };
+    push(Prop::RowGap, row);
+    push(Prop::ColumnGap, column);
+    true
 }
 
 fn expand_sides(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {

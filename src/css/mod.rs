@@ -22,9 +22,10 @@ pub use cascade::{
 };
 pub use media::{Viewport, matches_media};
 pub use properties::{
-    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle,
-    LINE_THROUGH, ListStyleType, OVERLINE, Overflow, Position, TextAlign, TextTransform, UNDERLINE,
-    VerticalAlign, Visibility, WhiteSpace,
+    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
+    FlexDirection, FlexWrap, Float, FontStyle, JustifyContent, LINE_THROUGH, ListStyleType,
+    OVERLINE, Overflow, Position, TextAlign, TextTransform, UNDERLINE, VerticalAlign, Visibility,
+    WhiteSpace,
 };
 pub use selector::{
     AttributeOperator, Combinator, Compound, PseudoClass, Selector, SimpleSelector, TypeSelector,

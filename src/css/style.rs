@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use super::media::Viewport;
 use super::properties::{
-    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle,
-    ListStyleType, Overflow, Position, Prop, TextAlign, TextTransform, Value, VerticalAlign,
-    Visibility, WhiteSpace,
+    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
+    FlexDirection, FlexWrap, Float, FontStyle, JustifyContent, ListStyleType, Overflow, Position,
+    Prop, TextAlign, TextTransform, Value, VerticalAlign, Visibility, WhiteSpace,
 };
 use super::values::{Color, Length, Unit};
 use super::variables::CustomProperties;
@@ -107,6 +107,17 @@ pub struct ComputedStyle {
     pub min_height: Size,
     pub max_width: Size,
     pub max_height: Size,
+    pub flex_direction: FlexDirection,
+    pub flex_wrap: FlexWrap,
+    pub justify_content: JustifyContent,
+    pub align_items: FlexAlign,
+    pub align_self: FlexAlign,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: Size,
+    pub order: i32,
+    pub row_gap: f32,
+    pub column_gap: f32,
 }
 
 impl ComputedStyle {
@@ -151,10 +162,22 @@ impl ComputedStyle {
             border_color: Sides::all(Color::BLACK),
             width: Size::Auto,
             height: Size::Auto,
-            min_width: Size::Px(0.0),
+            // Means zero, apart from for a flex item, which then is not narrower than its content.
+            min_width: Size::Auto,
             min_height: Size::Px(0.0),
             max_width: Size::Auto,
             max_height: Size::Auto,
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Nowrap,
+            justify_content: JustifyContent::Normal,
+            align_items: FlexAlign::Normal,
+            align_self: FlexAlign::Auto,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: Size::Auto,
+            order: 0,
+            row_gap: 0.0,
+            column_gap: 0.0,
         }
     }
 
@@ -513,5 +536,18 @@ fn apply(
         P::MinHeight => size!(min_height),
         P::MaxWidth => size!(max_width),
         P::MaxHeight => size!(max_height),
+        P::FlexDirection => set!(flex_direction, V::FlexDirection(direction) => *direction),
+        P::FlexWrap => set!(flex_wrap, V::FlexWrap(wrap) => *wrap),
+        P::JustifyContent => set!(justify_content, V::JustifyContent(justify) => *justify),
+        P::AlignItems => set!(align_items, V::FlexAlign(align) => *align),
+        P::AlignSelf => set!(align_self, V::FlexAlign(align) => *align),
+        P::FlexGrow => set!(flex_grow, V::Number(grow) => *grow),
+        P::FlexShrink => set!(flex_shrink, V::Number(shrink) => *shrink),
+        P::FlexBasis => size!(flex_basis),
+        // It was read as a whole number, so nothing is lost.
+        #[allow(clippy::cast_possible_truncation)]
+        P::Order => set!(order, V::Number(order) => *order as i32),
+        P::RowGap => width!(row_gap),
+        P::ColumnGap => width!(column_gap),
     }
 }

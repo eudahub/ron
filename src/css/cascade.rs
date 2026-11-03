@@ -10,7 +10,9 @@ use std::sync::LazyLock;
 use crate::html::{Document, NodeId, NodeKind, Tag};
 
 use super::media::{Viewport, matches_media};
-use super::properties::{Compiled, PROPERTY_COUNT, Prop, Value, compile, legacy_font_size};
+use super::properties::{
+    Compiled, Display, PROPERTY_COUNT, Prop, Value, compile, legacy_font_size,
+};
 use super::selector::{
     Combinator, ElementNames, MatchContext, PseudoClass, Selector, SimpleSelector, TypeSelector,
 };
@@ -797,6 +799,12 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         if parent == document.root() {
             style.display = blockified(style.display);
             root_font_size = Some(style.font_size);
+        } else if matches!(
+            result.styles[parent_style as usize].display,
+            Display::Flex | Display::InlineFlex
+        ) {
+            // What stands directly in a flexible box is a box of its own.
+            style.display = blockified(style.display);
         }
         // Different tags often come to the same style, such as images with other sources.
         let fingerprint = fingerprint_of(&style);
