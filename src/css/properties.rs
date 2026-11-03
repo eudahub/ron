@@ -141,7 +141,7 @@ properties! {
     GridAutoRows "grid-auto-rows" GridTemplateAreas "grid-template-areas"
     GridColumnStart "grid-column-start" GridColumnEnd "grid-column-end"
     GridRowStart "grid-row-start" GridRowEnd "grid-row-end"
-    JustifyItems "justify-items" JustifySelf "justify-self"
+    JustifyItems "justify-items" JustifySelf "justify-self" Opacity "opacity"
 }
 
 /// `text-decoration-line` bits.
@@ -343,6 +343,12 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
                 _ => FlexAlign::parse(text).map(Value::FlexAlign),
             }
         }
+        P::Opacity => match text.strip_suffix('%') {
+            Some(percent) => percent.parse::<f32>().ok().map(|percent| percent / 100.0),
+            None => text.parse::<f32>().ok(),
+        }
+        .filter(|opacity| opacity.is_finite())
+        .map(|opacity| Value::Number(opacity.clamp(0.0, 1.0))),
         P::ZIndex => empty("auto").or_else(|| {
             text.parse::<i32>()
                 .ok()
@@ -489,6 +495,7 @@ fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
     use Prop as P;
     Some(match name {
         "margin" => &[P::MarginTop, P::MarginRight, P::MarginBottom, P::MarginLeft],
+        "inset" => &[P::Top, P::Right, P::Bottom, P::Left],
         "padding" => &[
             P::PaddingTop,
             P::PaddingRight,
@@ -579,7 +586,7 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
         return false;
     };
     match name {
-        "margin" | "padding" | "border-width" | "border-style" | "border-color" => {
+        "margin" | "inset" | "padding" | "border-width" | "border-style" | "border-color" => {
             expand_sides(longhands, text, push)
         }
         "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {

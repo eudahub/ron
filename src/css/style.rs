@@ -146,6 +146,7 @@ pub struct ComputedStyle {
     pub grid_row_end: GridLine,
     pub justify_items: FlexAlign,
     pub justify_self: FlexAlign,
+    pub opacity: f32,
 }
 
 impl ComputedStyle {
@@ -217,6 +218,7 @@ impl ComputedStyle {
             grid_row_end: GridLine::Auto,
             justify_items: FlexAlign::Normal,
             justify_self: FlexAlign::Auto,
+            opacity: 1.0,
         }
     }
 
@@ -642,6 +644,7 @@ fn apply(
         P::GridRowEnd => set!(grid_row_end, V::GridText(text) => line_of(text)),
         P::JustifyItems => set!(justify_items, V::FlexAlign(align) => *align),
         P::JustifySelf => set!(justify_self, V::FlexAlign(align) => *align),
+        P::Opacity => set!(opacity, V::Number(opacity) => *opacity),
         P::ZIndex => match value {
             V::Inherit => style.z_index = parent.z_index,
             V::Initial | V::Empty => style.z_index = None,
