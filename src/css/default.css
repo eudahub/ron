@@ -68,7 +68,27 @@ tr { display: table-row; vertical-align: inherit; }
 td, th { display: table-cell; vertical-align: inherit; padding: 1px; }
 th { font-weight: bold; text-align: center; }
 
-input, select, button, textarea { display: inline-block; }
+input, select, button, textarea {
+    display: inline-block; font-size: 13.3333px; font-family: sans-serif; font-weight: 400;
+    font-style: normal; line-height: normal; text-align: left; text-indent: 0; color: #000;
+    white-space: normal; border: 1px solid #8f8f9d; background-color: #fff;
+    padding: 2.5px 2px;
+}
+button, select, input[type=submit], input[type=reset], input[type=button], input[type=file] {
+    background-color: #e9e9ed; box-sizing: border-box;
+}
+button, input[type=submit], input[type=reset], input[type=button], input[type=file] {
+    padding: 2.5px 6px; text-align: center;
+}
+select { padding: 1.5px 4px; }
+input[type=checkbox], input[type=radio] { padding: 0; margin: 3px 3px 3px 4px; }
+input[type=range] { padding: 0; border: 0; background-color: transparent; margin: 2px; }
+input[type=color] { padding: 1px; background-color: #e9e9ed; }
+textarea { padding: 1px; font-family: monospace; }
+select[size], select[multiple] { padding: 1px; background-color: #fff; }
+input[disabled], select[disabled], button[disabled], textarea[disabled] {
+    color: #8f8f9d; border-color: #c0c0c8;
+}
 option, optgroup { display: block; padding-top: 2px; padding-bottom: 2px; white-space: nowrap; }
 fieldset { margin-left: 2px; margin-right: 2px; padding: 0.35em 0.75em 0.625em; border: 2px groove; }
 img { display: inline; }
