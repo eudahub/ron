@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::grid::{GridLine, parse_areas, parse_line, parse_tracks};
-use super::math::{Math, parse_math};
+use super::math::{Math, parse_math, parse_transform};
 use super::values::{Color, Length, Unit, parse_color, parse_length, parse_url, split_words};
 
 macro_rules! keywords {
@@ -142,6 +142,7 @@ properties! {
     GridColumnStart "grid-column-start" GridColumnEnd "grid-column-end"
     GridRowStart "grid-row-start" GridRowEnd "grid-row-end"
     JustifyItems "justify-items" JustifySelf "justify-self" Opacity "opacity"
+    Transform "transform"
 }
 
 /// `text-decoration-line` bits.
@@ -343,6 +344,9 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
                 _ => FlexAlign::parse(text).map(Value::FlexAlign),
             }
         }
+        P::Transform => empty("none").or_else(|| {
+            parse_transform(text, &|_| Some(0.0)).map(|_| Value::GridText(text.into()))
+        }),
         P::Opacity => match text.strip_suffix('%') {
             Some(percent) => percent.parse::<f32>().ok().map(|percent| percent / 100.0),
             None => text.parse::<f32>().ok(),

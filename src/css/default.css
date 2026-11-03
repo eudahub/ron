@@ -9,6 +9,9 @@ template, title {
     display: none;
 }
 [hidden] { display: none; }
+/* Pages keep menus in these for browsers without scripts. */
+details:not([open]) > :not(summary) { display: none; }
+dialog:not([open]) { display: none; }
 
 html { color: black; font-family: serif; }
 body { margin: 8px; }

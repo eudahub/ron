@@ -340,6 +340,105 @@ fn with_bound(size: CalcSize, bound: Linear, smallest: bool) -> Option<Result> {
     Some(Result::Size(size))
 }
 
+/// How far a `transform` moves a box across and down. All other transforms are left out, as they
+/// take more than moving what has been laid out, though they still count as being a transform.
+/// Gives nothing when it is not a list of functions at all.
+pub(super) fn parse_transform(
+    text: &str,
+    pixels: &impl Fn(Length) -> Option<f32>,
+) -> Option<(CalcSize, CalcSize)> {
+    let mut across = Linear {
+        px: 0.0,
+        percent: 0.0,
+    };
+    let mut down = across;
+    let mut rest = text.trim();
+    let of = |argument: &str| -> Option<Linear> {
+        let argument = argument.trim();
+        if let Some(length) = parse_length(argument, false) {
+            return Some(if length.unit == Unit::Percent {
+                Linear {
+                    px: 0.0,
+                    percent: length.value,
+                }
+            } else {
+                Linear {
+                    px: pixels(length)?,
+                    percent: 0.0,
+                }
+            });
+        }
+        let size = parse_math(argument)?.size(pixels)?;
+        size.is_plain().then_some(size.value)
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        let open = rest.find('(')?;
+        let name = rest[..open].to_ascii_lowercase();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return None;
+        }
+        let mut depth = 0_u32;
+        let mut close = None;
+        for (index, byte) in rest.bytes().enumerate().skip(open) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let inner = &rest[open + 1..close];
+        let mut parts = Vec::new();
+        let mut level = 0_u32;
+        let mut start = 0;
+        for (index, byte) in inner.bytes().enumerate() {
+            match byte {
+                b'(' => level += 1,
+                b')' => level = level.saturating_sub(1),
+                b',' if level == 0 => {
+                    parts.push(&inner[start..index]);
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&inner[start..]);
+        match (name.as_str(), parts.as_slice()) {
+            ("translate" | "translatex" | "translate3d", [first, ..]) if name != "translatey" => {
+                across = across.shifted(of(first)?);
+                if name != "translatex"
+                    && let Some(second) = parts.get(1)
+                {
+                    down = down.shifted(of(second)?);
+                }
+            }
+            ("translatey", [only]) => down = down.shifted(of(only)?),
+            // The last two numbers of a matrix are how far it moves.
+            ("matrix", [_, _, _, _, x, y]) => {
+                let number = |text: &str| text.trim().parse::<f32>().ok().filter(|n| n.is_finite());
+                across.px += number(x)?;
+                down.px += number(y)?;
+            }
+            _ => {}
+        }
+        rest = rest[close + 1..].trim_start();
+    }
+    Some((CalcSize::plain(across), CalcSize::plain(down)))
+}
+
 /// Reads a value that is one of these functions as a whole. Anything else gives nothing.
 pub(super) fn parse_math(text: &str) -> Option<Arc<Math>> {
     let lower = text.trim_start().get(..6)?.to_ascii_lowercase();

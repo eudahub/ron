@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::grid::{GridAreas, GridLine, GridTrack, parse_areas, parse_line, parse_tracks};
-use super::math::{CalcRef, CalcSize, keep_calc};
+use super::math::{CalcRef, CalcSize, keep_calc, parse_transform};
 use super::media::Viewport;
 use super::properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
@@ -147,6 +147,9 @@ pub struct ComputedStyle {
     pub justify_items: FlexAlign,
     pub justify_self: FlexAlign,
     pub opacity: f32,
+    /// How far `transform` moves the box across and down, in percent of its own size. Any transform
+    /// counts here, also when it does not move anything.
+    pub transform: Option<(Size, Size)>,
 }
 
 impl ComputedStyle {
@@ -219,6 +222,7 @@ impl ComputedStyle {
             justify_items: FlexAlign::Normal,
             justify_self: FlexAlign::Auto,
             opacity: 1.0,
+            transform: None,
         }
     }
 
@@ -645,6 +649,18 @@ fn apply(
         P::JustifyItems => set!(justify_items, V::FlexAlign(align) => *align),
         P::JustifySelf => set!(justify_self, V::FlexAlign(align) => *align),
         P::Opacity => set!(opacity, V::Number(opacity) => *opacity),
+        P::Transform => match value {
+            V::Inherit => style.transform = parent.transform,
+            V::Initial | V::Empty => style.transform = None,
+            V::GridText(text) => {
+                let moved = parse_transform(text, &|length| context.pixels(length));
+                if let Some((across, down)) = moved {
+                    let of = |size| Size::of_calc(size).unwrap_or(Size::Px(0.0));
+                    style.transform = Some((of(across), of(down)));
+                }
+            }
+            _ => {}
+        },
         P::ZIndex => match value {
             V::Inherit => style.z_index = parent.z_index,
             V::Initial | V::Empty => style.z_index = None,

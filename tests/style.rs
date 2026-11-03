@@ -466,6 +466,40 @@ fn expressions_work_in_all_that_takes_a_length() {
 }
 
 #[test]
+fn transforms_are_read() {
+    let of = |value: &str| {
+        styled(&format!("p {{ transform: {value} }}"))
+            .style("a")
+            .transform
+    };
+    assert_eq!(of("none"), None);
+    assert_eq!(of("rubbish"), None);
+    assert_eq!(
+        of("translate(1px, 2px)"),
+        Some((Size::Px(1.0), Size::Px(2.0)))
+    );
+    assert_eq!(
+        of("translate(-50%, 2em)"),
+        Some((Size::Percent(-50.0), Size::Px(32.0)))
+    );
+    assert_eq!(of("translateX(5px)"), Some((Size::Px(5.0), Size::Px(0.0))));
+    assert_eq!(of("translateY(5px)"), Some((Size::Px(0.0), Size::Px(5.0))));
+    assert_eq!(
+        of("translate3d(1px, 2px, 3px)"),
+        Some((Size::Px(1.0), Size::Px(2.0)))
+    );
+    assert_eq!(of("scale(2)"), Some((Size::Px(0.0), Size::Px(0.0))));
+    assert_eq!(
+        of("translateX(1px) translateX(2px)"),
+        Some((Size::Px(3.0), Size::Px(0.0)))
+    );
+    assert!(matches!(
+        of("translateX(calc(50% + 1px))"),
+        Some((Size::Calc(_), _))
+    ));
+}
+
+#[test]
 fn values_it_cannot_read_are_dropped() {
     assert_eq!(
         styled("p { color: red; color: var(--x) }").style("a").color,
