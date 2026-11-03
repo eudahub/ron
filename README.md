@@ -21,8 +21,10 @@ Nodes take 28 bytes each and refer to the source, which the document keeps; text
 attributes are not copied. As a result text interrupted by an ignored tag stays as two
 adjacent text nodes, and names of unknown elements keep the case they were written in.
 
-Depth stops growing at 512 levels, with deeper elements becoming siblings. A document stops
-growing at about 16 million nodes or 4 GiB of source; `is_truncated` reports that.
+At most 512 elements stay open, with further ones becoming siblings. Repairing misnested
+formatting can leave the tree deeper than that, so code walking it must not recurse. A
+document stops growing at about 16 million nodes or 4 GiB of source; `is_truncated` reports
+that.
 
 ## HTML tokenizer
 
@@ -53,6 +55,7 @@ target/release/ron-dump --chunk 1400 page.html  # the same through the stream to
 target/release/ron-dump --tree page.html   # the document tree
 target/release/ron-dump --memory page.html # memory and time while parsing as it is read
 cargo test
+RON_CORPUS_DIR=pages cargo test --release -- --ignored  # also real .html files from a directory
 ```
 
 `generated/html_parser.rs` is generated and checked in, so building needs only Cargo.

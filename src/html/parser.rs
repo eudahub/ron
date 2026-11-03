@@ -8,7 +8,8 @@ use super::dom::{Document, NodeId, NodeKind};
 use super::tag::Tag;
 use super::tokenizer::{Scanner, Token, TokenKind, is_html_space, tag_name};
 
-/// Deeper elements become siblings. Searches walk the open elements, so this bounds them.
+/// Limit of open elements; further ones become siblings. Searches walk the open elements,
+/// so this bounds them. The tree can get deeper, so code walking it must not recurse.
 const MAX_DEPTH: usize = 512;
 /// The oldest entries are dropped beyond this; it bounds the elements one text can reopen.
 const MAX_ACTIVE_FORMATTING: usize = 64;
