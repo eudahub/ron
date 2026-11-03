@@ -3,7 +3,26 @@ Memory-safe web engine library in Rust. It takes UTF-8 text, never opens files o
 sockets itself, and has no GUI, so a browser and a crawler can share it. The browser
 built on it is a separate project, `ron-browser`.
 
-The current stage is HTML tokenization; there is no tree or rendering yet.
+The current stage is HTML parsing into a document tree; there is no CSS or rendering yet.
+
+## HTML parser
+
+`ron::html::parse` builds a `Document` from a complete page. `ron::html::Parser` does the
+same for a page that arrives in pieces: call `feed` with each piece and `finish` at the
+end. After every `feed`, `document()` returns a valid tree of what is known so far, so a
+page can be shown before it has fully arrived.
+
+The tree follows the HTML tree construction rules, including implied elements, implied
+end tags and the repair of misnested formatting. Not implemented yet: moving misplaced
+table content in front of the table, `<template>` contents, and the separate rules of SVG
+and MathML. Character references are not decoded yet.
+
+Nodes take 28 bytes each and refer to the source, which the document keeps; text and
+attributes are not copied. As a result text interrupted by an ignored tag stays as two
+adjacent text nodes, and names of unknown elements keep the case they were written in.
+
+Depth stops growing at 512 levels, with deeper elements becoming siblings. A document stops
+growing at about 16 million nodes or 4 GiB of source; `is_truncated` reports that.
 
 ## HTML tokenizer
 
@@ -31,6 +50,8 @@ cargo build --release
 target/release/ron-dump page.html          # print tokens and attributes
 target/release/ron-dump --stats page.html  # token counts and tokenizing time
 target/release/ron-dump --chunk 1400 page.html  # the same through the stream tokenizer
+target/release/ron-dump --tree page.html   # the document tree
+target/release/ron-dump --memory page.html # memory and time while parsing as it is read
 cargo test
 ```
 

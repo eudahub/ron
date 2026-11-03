@@ -140,14 +140,14 @@ impl Default for Mode {
 }
 
 #[derive(Default)]
-struct Scanner {
+pub(super) struct Scanner {
     offset: usize,
     mode: Mode,
 }
 
 impl Scanner {
     /// Returns the next token that is final, given whether `source` is the whole input.
-    fn next(&mut self, source: &str, complete: bool) -> Option<Token> {
+    pub(super) fn next(&mut self, source: &str, complete: bool) -> Option<Token> {
         loop {
             match &mut self.mode {
                 Mode::Markup(scan) => {
