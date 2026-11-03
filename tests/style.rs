@@ -536,6 +536,95 @@ fn floats_and_roots_become_blocks() {
 }
 
 #[test]
+fn corners_come_in_every_form() {
+    let radius = |css: &str| {
+        let radius = styled(css).style("a").border_radius;
+        [radius.top, radius.right, radius.bottom, radius.left]
+    };
+    let px = Size::Px;
+    assert_eq!(radius("p { }"), [px(0.0); 4]);
+    assert_eq!(radius("p { border-radius: 5px }"), [px(5.0); 4]);
+    assert_eq!(
+        radius("p { border-radius: 1px 2px }"),
+        [px(1.0), px(2.0), px(1.0), px(2.0)]
+    );
+    assert_eq!(
+        radius("p { border-radius: 1px 2px 3px }"),
+        [px(1.0), px(2.0), px(3.0), px(2.0)]
+    );
+    assert_eq!(
+        radius("p { border-radius: 1px 2px 3px 4px }"),
+        [px(1.0), px(2.0), px(3.0), px(4.0)]
+    );
+    assert_eq!(radius("p { border-radius: 50% }"), [Size::Percent(50.0); 4]);
+    assert_eq!(radius("p { border-radius: 1em }"), [px(16.0); 4]);
+    assert_eq!(radius("p { border-radius: 5px / 9px }"), [px(5.0); 4]);
+    assert_eq!(
+        radius("p { border-top-left-radius: 7px 9px; border-bottom-right-radius: 8px }"),
+        [px(7.0), px(0.0), px(8.0), px(0.0)]
+    );
+    assert_eq!(
+        radius(
+            "p { border-start-start-radius: 1px; border-start-end-radius: 2px;
+             border-end-end-radius: 3px; border-end-start-radius: 4px }"
+        ),
+        [px(1.0), px(2.0), px(3.0), px(4.0)]
+    );
+}
+
+#[test]
+fn corners_that_make_no_sense_are_left_out() {
+    let top_left = |css: &str| styled(css).style("a").border_radius.top;
+    assert_eq!(
+        top_left("p { border-radius: 3px; border-radius: -1px }"),
+        Size::Px(3.0)
+    );
+    assert_eq!(
+        top_left("p { border-radius: 3px; border-radius: red }"),
+        Size::Px(3.0)
+    );
+    assert_eq!(
+        top_left("p { border-radius: 3px; border-radius: 1px 2px 3px 4px 5px }"),
+        Size::Px(3.0)
+    );
+}
+
+#[test]
+fn corners_are_not_inherited_unless_asked() {
+    let page = styled("div { border-radius: 3px } p { }");
+    assert_eq!(page.style("a").border_radius.top, Size::Px(0.0));
+    let asked = styled("div { border-radius: 3px } p { border-radius: inherit }");
+    assert_eq!(asked.style("a").border_radius.top, Size::Px(3.0));
+}
+
+#[test]
+fn a_form_control_is_round_until_the_page_gives_it_a_border() {
+    let radius = |body: &str| {
+        Page::new(&format!("<!DOCTYPE html>{body}"))
+            .style("a")
+            .border_radius
+            .top
+    };
+    assert_eq!(radius("<input t=a>"), Size::Px(4.0));
+    assert_eq!(radius("<button t=a></button>"), Size::Px(4.0));
+    assert_eq!(radius("<select t=a></select>"), Size::Px(4.0));
+    assert_eq!(radius("<textarea t=a></textarea>"), Size::Px(4.0));
+    assert_eq!(
+        radius("<input t=a style='border:1px solid red'>"),
+        Size::Px(0.0)
+    );
+    assert_eq!(radius("<input t=a style='border:0'>"), Size::Px(0.0));
+    assert_eq!(
+        radius("<input t=a style='border-radius:9px'>"),
+        Size::Px(9.0)
+    );
+    assert_eq!(
+        radius("<div t=a style='border:1px solid #8f8f9d'></div>"),
+        Size::Px(0.0)
+    );
+}
+
+#[test]
 fn properties_by_the_direction_of_the_text_come_to_sides() {
     let style = |css: &str| styled(css).style("a").clone();
     let both = style("p { padding-inline: 10px; margin-block: 3px }");
