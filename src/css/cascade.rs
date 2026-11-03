@@ -29,6 +29,8 @@ const QUIRKS_STYLES: &str = include_str!("quirks.css");
 
 /// Distinct styles beyond this reuse the parent's, so that hostile pages stay small.
 const MAX_STYLES: usize = 1 << 20;
+/// Above this many styles with lengths of the view, going through the rules again is about as good.
+const MAX_VIEW_STYLES: usize = 4096;
 /// What all sets of custom properties of a page may take; beyond it, elements only inherit.
 const MAX_CUSTOM_PROPERTY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -346,6 +348,18 @@ pub struct Styles {
     /// The style index of each node, by node index.
     of_node: Vec<u32>,
     limited: bool,
+    /// The styles with lengths that depend on the size of the view, parents before children.
+    of_view: Vec<ViewStyle>,
+    too_many_of_view: bool,
+}
+
+/// What it takes to work out one style again for a view of another size, without going through the
+/// rules again.
+struct ViewStyle {
+    number: u32,
+    parent: u32,
+    root_font_size: Option<f32>,
+    values: Vec<(usize, Value)>,
 }
 
 impl Styles {
@@ -354,6 +368,8 @@ impl Styles {
             styles: vec![ComputedStyle::initial()],
             of_node: Vec::new(),
             limited: false,
+            of_view: Vec::new(),
+            too_many_of_view: false,
         }
     }
 
@@ -365,7 +381,39 @@ impl Styles {
             styles: vec![ComputedStyle::initial()],
             of_node: vec![0; document.node_count()],
             limited: false,
+            of_view: Vec::new(),
+            too_many_of_view: false,
         }
+    }
+
+    /// Works out the styles with lengths of the view again for a view of this size, which takes far
+    /// less than [`compute_styles`], when `@media` conditions come out as before. Gives `false` when
+    /// that is not enough, as what elements inherit changes too, and only [`compute_styles`] will do.
+    #[must_use]
+    pub fn follow_view(&mut self, viewport: Viewport) -> bool {
+        if self.too_many_of_view {
+            return false;
+        }
+        for view_style in &self.of_view {
+            let mut cascaded: [Option<&Value>; PROPERTY_COUNT] = [None; PROPERTY_COUNT];
+            for (index, value) in &view_style.values {
+                cascaded[*index] = Some(value);
+            }
+            let old = &self.styles[view_style.number as usize];
+            let mut style = compute(
+                &self.styles[view_style.parent as usize],
+                &cascaded,
+                view_style.root_font_size,
+                viewport,
+            );
+            style.custom_properties.clone_from(&old.custom_properties);
+            style.display = old.display;
+            if ComputedStyle::inheriting(&style) != ComputedStyle::inheriting(old) {
+                return false;
+            }
+            self.styles[view_style.number as usize] = style;
+        }
+        true
     }
 
     /// The style of an element, or for any other node the style it inherits.
@@ -799,6 +847,7 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         apply_rules(&mut cascaded, ORIGIN_AUTHOR, true);
         apply_list(&mut cascaded, &inline, true);
         apply_rules(&mut cascaded, ORIGIN_DEFAULT, true);
+        let root_font_size_here = root_font_size;
         let mut style = compute(
             &result.styles[parent_style as usize],
             &cascaded,
@@ -832,17 +881,35 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
             }
         }
         // Different tags often come to the same style, such as images with other sources.
+        // Ones that are alike in this view can differ in another, so those stay apart.
+        let of_view = style.uses_view_width || style.uses_view_height;
         let fingerprint = fingerprint_of(&style);
         let same = by_fingerprint
             .get(&fingerprint)
             .copied()
-            .filter(|&number| result.styles[number as usize] == style);
+            .filter(|&number| !of_view && result.styles[number as usize] == style);
         let number = same.unwrap_or_else(|| {
             let number = u32::try_from(result.styles.len()).unwrap_or(u32::MAX);
             result.styles.push(style);
             by_fingerprint.insert(fingerprint, number);
             number
         });
+        if of_view {
+            if result.of_view.len() < MAX_VIEW_STYLES {
+                result.of_view.push(ViewStyle {
+                    number,
+                    parent: parent_style,
+                    root_font_size: root_font_size_here,
+                    values: cascaded
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, value)| value.map(|value| (index, value.clone())))
+                        .collect(),
+                });
+            } else {
+                result.too_many_of_view = true;
+            }
+        }
         cache.insert(key, number);
         result.of_node[id.index()] = number;
     }

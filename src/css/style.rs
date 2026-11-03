@@ -237,7 +237,7 @@ impl ComputedStyle {
     }
 
     /// A new style that inherits from `parent` and has the initial values of the rest.
-    fn inheriting(parent: &Self) -> Self {
+    pub(super) fn inheriting(parent: &Self) -> Self {
         Self {
             color: parent.color,
             custom_properties: parent.custom_properties.clone(),
