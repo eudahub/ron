@@ -799,12 +799,27 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         if parent == document.root() {
             style.display = blockified(style.display);
             root_font_size = Some(style.font_size);
-        } else if matches!(
-            result.styles[parent_style as usize].display,
-            Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
-        ) {
-            // What stands directly in a flexible box or a grid is a box of its own.
-            style.display = blockified(style.display);
+        } else {
+            // What stands directly in a flexible box or a grid is a box of its own, also through
+            // elements that make no box themselves.
+            let mut around = parent_style;
+            let mut up = parent;
+            for _ in 0..MAX_CONTENTS_DEPTH {
+                if result.styles[around as usize].display != Display::Contents {
+                    break;
+                }
+                let Some(next) = document.parent(up) else {
+                    break;
+                };
+                up = next;
+                around = result.of_node[up.index()];
+            }
+            if matches!(
+                result.styles[around as usize].display,
+                Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+            ) {
+                style.display = blockified(style.display);
+            }
         }
         // Different tags often come to the same style, such as images with other sources.
         let fingerprint = fingerprint_of(&style);
@@ -851,6 +866,8 @@ fn fingerprint_of(style: &ComputedStyle) -> u64 {
     writer.0.finish()
 }
 
+/// How many elements without a box of their own are looked through for what is around them.
+const MAX_CONTENTS_DEPTH: usize = 32;
 const ORIGIN_DEFAULT: u8 = 0;
 const ORIGIN_AUTHOR: u8 = 1;
 

@@ -564,6 +564,11 @@ fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
             P::GridRowEnd,
             P::GridColumnEnd,
         ],
+        "grid-template" | "grid" => &[
+            P::GridTemplateAreas,
+            P::GridTemplateRows,
+            P::GridTemplateColumns,
+        ],
         "place-items" => &[P::AlignItems, P::JustifyItems],
         "place-self" => &[P::AlignSelf, P::JustifySelf],
         _ => return None,
@@ -611,6 +616,7 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
         "flex-flow" => expand_flex_flow(text, push),
         "gap" | "grid-gap" => expand_gap(text, push),
         "grid-column" | "grid-row" | "grid-area" => expand_grid_lines(longhands, text, push),
+        "grid-template" | "grid" => expand_grid_template(text, push),
         "place-items" | "place-self" => expand_place(longhands, text, push),
         _ => false,
     }
@@ -645,6 +651,98 @@ fn expand_grid_lines(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop,
         push(prop, parsed);
     }
     true
+}
+
+/// Rows, then a slash and columns, where rows can be named by pictures of them, each followed by its
+/// size. What flows by itself, as in `grid: auto-flow 1fr`, is not read.
+fn expand_grid_template(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    if text.eq_ignore_ascii_case("none") {
+        push(Prop::GridTemplateAreas, Value::Empty);
+        push(Prop::GridTemplateRows, Value::Initial);
+        push(Prop::GridTemplateColumns, Value::Initial);
+        return true;
+    }
+    let Some((rows_part, columns)) = split_template(text) else {
+        return false;
+    };
+    let mut areas = String::new();
+    let mut rows = String::new();
+    let mut rest = rows_part.trim();
+    let mut waiting_row = false;
+    while !rest.is_empty() {
+        let first = rest.chars().next().unwrap_or(' ');
+        if first == '"' || first == '\'' {
+            let Some(end) = rest[1..].find(first) else {
+                return false;
+            };
+            if waiting_row {
+                rows.push_str("auto ");
+            }
+            areas.push_str(&rest[..end + 2]);
+            areas.push(' ');
+            waiting_row = true;
+            rest = rest[end + 2..].trim_start();
+            continue;
+        }
+        let mut depth = 0_u32;
+        let end = rest
+            .char_indices()
+            .find(|&(_, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+                depth == 0 && (c.is_ascii_whitespace() || c == '"' || c == '\'')
+            })
+            .map_or(rest.len(), |(index, _)| index);
+        rows.push_str(&rest[..end]);
+        rows.push(' ');
+        waiting_row = false;
+        rest = rest[end..].trim_start();
+    }
+    if waiting_row {
+        rows.push_str("auto ");
+    }
+    let areas_value = if areas.is_empty() {
+        Some(Value::Empty)
+    } else {
+        parse_longhand(Prop::GridTemplateAreas, areas.trim())
+    };
+    let rows_value = parse_longhand(Prop::GridTemplateRows, rows.trim());
+    let columns_value = match columns {
+        Some(columns) => parse_longhand(Prop::GridTemplateColumns, columns.trim()),
+        None => Some(Value::Initial),
+    };
+    let (Some(areas_value), Some(rows_value), Some(columns_value)) =
+        (areas_value, rows_value, columns_value)
+    else {
+        return false;
+    };
+    push(Prop::GridTemplateAreas, areas_value);
+    push(Prop::GridTemplateRows, rows_value);
+    push(Prop::GridTemplateColumns, columns_value);
+    true
+}
+
+/// Splits at a slash outside of quotes and brackets.
+fn split_template(text: &str) -> Option<(&str, Option<&str>)> {
+    let mut depth = 0_u32;
+    let mut quote = None;
+    for (index, character) in text.char_indices() {
+        match (quote, character) {
+            (Some(open), _) if open == character => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(character),
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
+            (None, '/') if depth == 0 => {
+                return Some((&text[..index], Some(&text[index + 1..])));
+            }
+            _ => {}
+        }
+    }
+    quote.is_none().then_some((text, None))
 }
 
 /// An alignment across and one along, or one for both.
