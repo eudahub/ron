@@ -301,7 +301,10 @@ impl Document {
     pub fn text(&self, id: NodeId) -> &str {
         let node = self.node(id);
         let start = node.start as usize;
-        &self.source[start..start + node.length as usize]
+        // Nothing there while the source is taken out.
+        self.source
+            .get(start..start + node.length as usize)
+            .unwrap_or_default()
     }
 
     /// The content of a text node as it should be shown: line ends normalized and
@@ -440,6 +443,17 @@ impl Document {
         &self.source
     }
 
+    /// Takes the source out, for keeping it in less memory while the tree is not looked at. Until
+    /// it is back, all text and all attributes read as empty, while the structure stays.
+    pub fn take_source(&mut self) -> String {
+        std::mem::take(&mut self.source)
+    }
+
+    /// Puts back what [`Self::take_source`] gave, which must be the same text.
+    pub fn put_source(&mut self, source: String) {
+        self.source = source;
+    }
+
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -477,7 +491,11 @@ impl<'a> Iterator for ElementAttributes<'a> {
             let &(id, start, end) = self.document.merged_attributes.get(self.next_merged)?;
             self.next_merged += 1;
             if id == self.id {
-                let text = &self.document.source[start as usize..end as usize];
+                let text = self
+                    .document
+                    .source
+                    .get(start as usize..end as usize)
+                    .unwrap_or_default();
                 self.current = attributes(text);
             }
         }

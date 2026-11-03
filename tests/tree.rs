@@ -5,6 +5,35 @@ use std::fmt::Write;
 
 use ron::html::{Document, NodeId, NodeKind, Parser, Tag, parse};
 
+#[test]
+fn the_source_can_be_taken_out_and_put_back() {
+    let source = "<div id=a><div id=b>text</div></div>";
+    let mut document = parse(source);
+    let shown = |document: &Document| {
+        let mut out = String::new();
+        show(document, document.root(), &mut out);
+        let ids: Vec<String> = document
+            .descendants(document.root())
+            .flat_map(|id| {
+                document
+                    .attributes(id)
+                    .map(|a| a.decoded_value().into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        (out, ids)
+    };
+    let before = shown(&document);
+    let taken = document.take_source();
+    assert_eq!(taken, source);
+    // The tree stays, and nothing reads text that is not there.
+    let (_, ids) = shown(&document);
+    assert!(ids.is_empty());
+    assert!(document.node_count() > 3);
+    document.put_source(taken);
+    assert_eq!(shown(&document), before);
+}
+
 /// Shows a subtree as `name(child,child)`, leaving out attributes.
 fn show(document: &Document, id: NodeId, out: &mut String) {
     match document.kind(id) {
