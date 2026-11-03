@@ -2,7 +2,7 @@
 //! with the same parent style and the same matched rules share one computed style.
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hasher};
 use std::sync::LazyLock;
@@ -11,7 +11,9 @@ use crate::html::{Document, NodeId, NodeKind, Tag};
 
 use super::media::{Viewport, matches_media};
 use super::properties::{Compiled, PROPERTY_COUNT, Prop, Value, compile, legacy_font_size};
-use super::selector::{MatchContext, PseudoClass, Selector, SimpleSelector, TypeSelector};
+use super::selector::{
+    Combinator, ElementNames, MatchContext, PseudoClass, Selector, SimpleSelector, TypeSelector,
+};
 use super::style::{ComputedStyle, blockified, compute};
 use super::stylesheet::Stylesheet;
 use super::values::{Color, Length, Unit, parse_length};
@@ -69,16 +71,85 @@ struct RuleIndex<'a> {
     ids: HashMap<String, Vec<IndexEntry<'a>>>,
     classes: HashMap<String, Vec<IndexEntry<'a>>>,
     tags: HashMap<String, Vec<IndexEntry<'a>>>,
+    /// Those that only ask for a link, which few elements can be.
+    links: Vec<IndexEntry<'a>>,
     others: Vec<IndexEntry<'a>>,
     uses_positions: bool,
 }
 
+/// What tests of a tag in its surroundings came to.
+struct KnownTag {
+    /// A number for this tag with everything around it, for the elements inside it to go by.
+    context: u32,
+    matched: Vec<(u32, u32)>,
+    /// With no style attribute and no hints.
+    plain: bool,
+}
+
+/// Whether nothing in this document can match, given all words it uses as an `id` or a `class`.
+/// This is true of most rules of large style sheets, and testing them would take most of the time.
+fn cannot_match(words: &HashSet<String>, selector: &Selector, quirks: bool) -> bool {
+    selector.compounds.iter().any(|compound| {
+        compound.simple.iter().any(|simple| match simple {
+            SimpleSelector::Pseudo(PseudoClass::Dynamic) => true,
+            SimpleSelector::Id(name) | SimpleSelector::Class(name) => {
+                if quirks {
+                    !words.contains(&name.to_ascii_lowercase())
+                } else {
+                    !words.contains(&**name)
+                }
+            }
+            _ => false,
+        })
+    })
+}
+
+/// Whether a selector looks at more than an element's tag and those of its ancestors: at siblings,
+/// at the place among them, or at what is inside.
+fn looks_at_neighbours(selector: &Selector) -> bool {
+    selector.compounds.iter().any(|compound| {
+        matches!(
+            compound.combinator,
+            Some(Combinator::NextSibling | Combinator::SubsequentSibling)
+        ) || compound.simple.iter().any(|simple| match simple {
+            SimpleSelector::Pseudo(pseudo) => match pseudo {
+                PseudoClass::Not(list) | PseudoClass::Is(list) => {
+                    list.iter().any(looks_at_neighbours)
+                }
+                PseudoClass::Root
+                | PseudoClass::AnyLink
+                | PseudoClass::Checked
+                | PseudoClass::Disabled
+                | PseudoClass::Enabled
+                | PseudoClass::Dynamic => false,
+                _ => true,
+            },
+            _ => false,
+        })
+    })
+}
+
+fn add_selector<'a>(
+    index: &mut RuleIndex<'a>,
+    neighbour_index: &mut RuleIndex<'a>,
+    words: &HashSet<String>,
+    selector: &'a Selector,
+    rule: u32,
+    quirks: bool,
+) {
+    // Styles of parts such as `::before` belong to boxes that layout does not make yet.
+    if selector.pseudo_element.is_some() || cannot_match(words, selector, quirks) {
+        return;
+    }
+    if looks_at_neighbours(selector) {
+        neighbour_index.add(selector, rule, quirks);
+    } else {
+        index.add(selector, rule, quirks);
+    }
+}
+
 impl<'a> RuleIndex<'a> {
     fn add(&mut self, selector: &'a Selector, rule: u32, quirks: bool) {
-        // Styles of parts such as `::before` belong to boxes that layout does not make yet.
-        if selector.pseudo_element.is_some() {
-            return;
-        }
         self.uses_positions |= selector_uses_positions(selector);
         let entry = IndexEntry {
             selector,
@@ -113,8 +184,12 @@ impl<'a> RuleIndex<'a> {
             SimpleSelector::Type(TypeSelector { name, .. }) => Some(name.to_string()),
             _ => None,
         });
+        let asks_for_link = simple
+            .iter()
+            .any(|s| matches!(s, SimpleSelector::Pseudo(PseudoClass::AnyLink)));
         match tag {
             Some(tag) => self.tags.entry(tag).or_default().push(entry),
+            None if asks_for_link => self.links.push(entry),
             None => self.others.push(entry),
         }
     }
@@ -147,6 +222,17 @@ pub struct Styles {
 }
 
 impl Styles {
+    /// Initial styles for every node, which takes almost no time, for when the real ones can only
+    /// be computed later.
+    #[must_use]
+    pub fn unstyled(document: &Document) -> Self {
+        Self {
+            styles: vec![ComputedStyle::initial()],
+            of_node: vec![0; document.node_count()],
+            limited: false,
+        }
+    }
+
     /// The style of an element, or for any other node the style it inherits.
     #[must_use]
     pub fn get(&self, id: NodeId) -> &ComputedStyle {
@@ -235,7 +321,9 @@ pub fn document_sheet_sources(document: &Document) -> Vec<SheetSource> {
             }
         } else if attribute("rel").is_some_and(|rel| {
             let mut words = rel.split_ascii_whitespace();
-            let is_sheet = words.clone().any(|word| word.eq_ignore_ascii_case("stylesheet"));
+            let is_sheet = words
+                .clone()
+                .any(|word| word.eq_ignore_ascii_case("stylesheet"));
             is_sheet && !words.any(|word| word.eq_ignore_ascii_case("alternate"))
         }) && let Some(href) = attribute("href")
         {
@@ -266,13 +354,23 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
                 .collect(),
         );
     }
+    let names = ElementNames::of_document(document);
+    let words = names.words(quirks);
     let mut index = RuleIndex::default();
+    let mut neighbour_index = RuleIndex::default();
     let mut add_sheet = |sheet: &'static Stylesheet, compiled: &'static [Vec<Compiled>]| {
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
             let number = u32::try_from(rules.len()).unwrap_or(u32::MAX);
             rules.push((ORIGIN_DEFAULT, declarations));
             for selector in &rule.selectors {
-                index.add(selector, number, quirks);
+                add_selector(
+                    &mut index,
+                    &mut neighbour_index,
+                    &words,
+                    selector,
+                    number,
+                    quirks,
+                );
             }
         }
     };
@@ -292,12 +390,25 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             let number = u32::try_from(rules.len()).unwrap_or(u32::MAX);
             rules.push((ORIGIN_AUTHOR, declarations));
             for selector in &rule.selectors {
-                index.add(selector, number, quirks);
+                add_selector(
+                    &mut index,
+                    &mut neighbour_index,
+                    &words,
+                    selector,
+                    number,
+                    quirks,
+                );
             }
         }
     }
 
-    let mut context = MatchContext::new(document, index.uses_positions);
+    let uses_positions = index.uses_positions || neighbour_index.uses_positions;
+    let mut context = MatchContext::with_names(document, uses_positions, names);
+    // For each element, what its tag and all those around it gave. Elements that are alike in that
+    // match the same rules, apart from those that look at neighbours, so the rest are tested once.
+    // Pages often repeat a few tags many thousands of times.
+    let mut contexts: Vec<u32> = vec![0; document.node_count()];
+    let mut known_tags: HashMap<(u32, u8, &str), KnownTag> = HashMap::new();
     let initial = ComputedStyle::initial();
     let mut result = Styles {
         styles: vec![initial],
@@ -315,23 +426,32 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             result.of_node[id.index()] = parent_style;
             continue;
         }
+        let source = document.text(id);
+        let next_context = u32::try_from(known_tags.len() + 1).unwrap_or(u32::MAX);
+        let known = known_tags
+            .entry((contexts[parent.index()], document.tag(id) as u8, source))
+            .or_insert_with(|| {
+                let mut matched = Vec::new();
+                collect_matches(document, id, &index, &mut context, &mut matched);
+                let has_style_attribute = document.attributes(id).any(|attribute| {
+                    attribute.name.eq_ignore_ascii_case("style") && attribute.value.is_some()
+                });
+                KnownTag {
+                    context: next_context,
+                    matched,
+                    plain: !has_style_attribute && presentational_hints(document, id).is_empty(),
+                }
+            });
+        contexts[id.index()] = known.context;
+        let plain = known.plain;
         matched.clear();
-        collect_matches(document, id, &index, &mut context, &mut matched);
+        matched.extend_from_slice(&known.matched);
+        collect_matches(document, id, &neighbour_index, &mut context, &mut matched);
         // Sort by specificity, then by source order, so that later entries win.
         matched.sort_unstable();
         matched.dedup();
-        let hints = presentational_hints(document, id);
-        let style_attribute = document
-            .attributes(id)
-            .find(|attribute| attribute.name.eq_ignore_ascii_case("style"))
-            .filter(|attribute| attribute.value.is_some())
-            .map(|attribute| attribute.decoded_value());
         // What the source of the tag holds decides the hints and the style attribute.
-        let tag_text = if hints.is_empty() && style_attribute.is_none() {
-            ""
-        } else {
-            document.text(id)
-        };
+        let tag_text = if plain { "" } else { source };
         let key = (
             parent_style,
             matched.iter().map(|&(_, rule)| rule).collect::<Vec<u32>>(),
@@ -346,6 +466,12 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             result.of_node[id.index()] = parent_style;
             continue;
         }
+        let hints = presentational_hints(document, id);
+        let style_attribute = document
+            .attributes(id)
+            .find(|attribute| attribute.name.eq_ignore_ascii_case("style"))
+            .filter(|attribute| attribute.value.is_some())
+            .map(|attribute| attribute.decoded_value());
         let mut inline = Vec::new();
         if let Some(text) = style_attribute {
             let sheet = Stylesheet::parse_declarations(&text);
@@ -458,34 +584,33 @@ fn collect_matches(
         }
     };
     let quirks = document.is_quirks();
-    for attribute in document.attributes(id) {
-        if attribute.name.eq_ignore_ascii_case("id") {
-            let value = attribute.decoded_value();
-            if quirks {
-                test(index.ids.get(&value.to_ascii_lowercase()), context);
-            } else {
-                test(index.ids.get(value.as_ref()), context);
-            }
-            break;
+    // The values stay with the context, so these copies take its place only for a moment.
+    let (element_id, element_class) = context.id_and_class(id);
+    let element_id = element_id.map(str::to_owned);
+    let element_class = element_class.map(str::to_owned);
+    if let Some(value) = element_id {
+        if quirks {
+            test(index.ids.get(&value.to_ascii_lowercase()), context);
+        } else {
+            test(index.ids.get(value.as_str()), context);
         }
     }
-    for attribute in document.attributes(id) {
-        if attribute.name.eq_ignore_ascii_case("class") {
-            let value = attribute.decoded_value();
-            for class in value.split_ascii_whitespace() {
-                if quirks {
-                    test(index.classes.get(&class.to_ascii_lowercase()), context);
-                } else {
-                    test(index.classes.get(class), context);
-                }
+    if let Some(value) = element_class {
+        for class in value.split_ascii_whitespace() {
+            if quirks {
+                test(index.classes.get(&class.to_ascii_lowercase()), context);
+            } else {
+                test(index.classes.get(class), context);
             }
-            break;
         }
     }
     test(index.tags.get(document.local_name(id).as_ref()), context);
     let lower = document.name(id).to_ascii_lowercase();
     if lower != document.local_name(id) {
         test(index.tags.get(&lower), context);
+    }
+    if matches!(document.tag(id), Tag::A | Tag::Area) {
+        test(Some(&index.links), context);
     }
     test(Some(&index.others), context);
 }

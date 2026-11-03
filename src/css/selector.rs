@@ -1,6 +1,6 @@
 //! Selectors: validated by the LALR(1) grammar, compiled from tokens, matched against a tree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::html::{Document, NodeId, NodeKind, Tag};
@@ -470,10 +470,99 @@ pub(super) struct MatchContext<'a> {
     positions: Vec<Position>,
     steps: u64,
     limited: bool,
+    names: ElementNames,
+}
+
+/// The `id` and `class` of elements as they get asked for. Attributes are read from the source of
+/// the tag each time, which is the most costly part of matching, as selectors keep asking about
+/// the same elements and their ancestors. The same values repeat a lot, so each is kept once.
+#[derive(Default)]
+pub(super) struct ElementNames {
+    /// For each node, the numbers of its `id` and `class`, once known.
+    of_node: Vec<(u32, u32)>,
+    values: Vec<Box<str>>,
+    numbers: HashMap<Box<str>, u32>,
+}
+
+/// Nothing is known about the node yet.
+const NAMES_UNKNOWN: u32 = u32::MAX;
+/// The node does not have that attribute.
+const NO_NAME: u32 = u32::MAX - 1;
+
+impl ElementNames {
+    /// Reads the names of all elements of a document.
+    pub(super) fn of_document(document: &Document) -> Self {
+        let mut names = Self::default();
+        for id in document.descendants(document.root()) {
+            if document.kind(id) == NodeKind::Element {
+                names.of(document, id);
+            }
+        }
+        names
+    }
+
+    /// All words used as an `id` or a `class` anywhere, for leaving out rules that ask for others.
+    /// In quirks mode, in lowercase.
+    pub(super) fn words(&self, quirks: bool) -> HashSet<String> {
+        let mut words = HashSet::new();
+        for value in &self.values {
+            for word in value.split_ascii_whitespace() {
+                words.insert(if quirks {
+                    word.to_ascii_lowercase()
+                } else {
+                    word.to_owned()
+                });
+            }
+        }
+        words
+    }
+
+    fn number_of(&mut self, value: &str) -> u32 {
+        if let Some(&number) = self.numbers.get(value) {
+            return number;
+        }
+        let number = u32::try_from(self.values.len()).unwrap_or(NO_NAME);
+        self.values.push(value.into());
+        self.numbers.insert(value.into(), number);
+        number
+    }
+
+    fn of(&mut self, document: &Document, element: NodeId) -> (Option<&str>, Option<&str>) {
+        if self.of_node.is_empty() {
+            self.of_node = vec![(NAMES_UNKNOWN, NAMES_UNKNOWN); document.node_count()];
+        }
+        let index = element.index();
+        if self.of_node[index].0 == NAMES_UNKNOWN {
+            let mut found = (NO_NAME, NO_NAME);
+            for attribute in document.attributes(element) {
+                // The first of the same name counts, as the parser keeps it first.
+                if found.0 == NO_NAME && attribute.name.eq_ignore_ascii_case("id") {
+                    found.0 = self.number_of(&attribute.decoded_value());
+                } else if found.1 == NO_NAME && attribute.name.eq_ignore_ascii_case("class") {
+                    found.1 = self.number_of(&attribute.decoded_value());
+                }
+            }
+            self.of_node[index] = found;
+        }
+        let (id, class) = self.of_node[index];
+        (
+            self.values.get(id as usize).map(AsRef::as_ref),
+            self.values.get(class as usize).map(AsRef::as_ref),
+        )
+    }
 }
 
 impl<'a> MatchContext<'a> {
     pub(super) fn new(document: &'a Document, with_positions: bool) -> Self {
+        Self::with_names(document, with_positions, ElementNames::default())
+    }
+
+    /// With names already read.
+    pub(super) fn with_names(
+        document: &'a Document,
+        with_positions: bool,
+        names: ElementNames,
+    ) -> Self {
         Self {
             document,
             positions: if with_positions {
@@ -483,7 +572,13 @@ impl<'a> MatchContext<'a> {
             },
             steps: 0,
             limited: false,
+            names,
         }
+    }
+
+    /// The `id` and `class` of an element.
+    pub(super) fn id_and_class(&mut self, element: NodeId) -> (Option<&str>, Option<&str>) {
+        self.names.of(self.document, element)
     }
 
     pub(super) fn matches(&mut self, element: NodeId, selector: &Selector) -> bool {
@@ -560,8 +655,21 @@ impl<'a> MatchContext<'a> {
 
     fn match_simple(&mut self, element: NodeId, simple: &SimpleSelector) -> bool {
         let document = self.document;
+        let quirks = document.is_quirks();
         match simple {
             SimpleSelector::Pseudo(pseudo) => self.match_pseudo(element, pseudo),
+            SimpleSelector::Id(id) => self
+                .names
+                .of(document, element)
+                .0
+                .is_some_and(|value| same_name(value, id, quirks)),
+            SimpleSelector::Class(class) => {
+                self.names.of(document, element).1.is_some_and(|value| {
+                    value
+                        .split_ascii_whitespace()
+                        .any(|word| same_name(word, class, quirks))
+                })
+            }
             other => match_plain(document, element, other),
         }
     }
@@ -719,6 +827,15 @@ fn next_element(document: &Document, element: NodeId) -> Option<NodeId> {
     .find(|&sibling| document.kind(sibling) == NodeKind::Element)
 }
 
+/// Ids and classes are the same only when written the same, except in quirks mode.
+fn same_name(value: &str, wanted: &str, quirks: bool) -> bool {
+    if quirks {
+        value.eq_ignore_ascii_case(wanted)
+    } else {
+        value == wanted
+    }
+}
+
 fn attribute(document: &Document, element: NodeId, name: &str) -> Option<String> {
     document
         .attributes(element)
@@ -750,22 +867,13 @@ fn match_plain(document: &Document, element: NodeId, simple: &SimpleSelector) ->
                 tag == selector.tag
             }
         }
-        SimpleSelector::Id(id) => attribute(document, element, "id").is_some_and(|value| {
-            if document.is_quirks() {
-                value.eq_ignore_ascii_case(id)
-            } else {
-                value == **id
-            }
-        }),
+        SimpleSelector::Id(id) => attribute(document, element, "id")
+            .is_some_and(|value| same_name(&value, id, document.is_quirks())),
         SimpleSelector::Class(class) => {
             attribute(document, element, "class").is_some_and(|value| {
-                value.split_ascii_whitespace().any(|word| {
-                    if document.is_quirks() {
-                        word.eq_ignore_ascii_case(class)
-                    } else {
-                        word == &**class
-                    }
-                })
+                value
+                    .split_ascii_whitespace()
+                    .any(|word| same_name(word, class, document.is_quirks()))
             })
         }
         SimpleSelector::Attribute {

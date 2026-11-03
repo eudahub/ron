@@ -5,7 +5,7 @@ use ron::css::{
     Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition, Viewport,
     WhiteSpace, compute_styles, document_stylesheets,
 };
-use ron::html::{Document, NodeId, parse};
+use ron::html::{Document, NodeId, NodeKind, parse};
 
 const RED: Color = Color::rgb(255, 0, 0);
 const GREEN: Color = Color::rgb(0, 128, 0);
@@ -562,4 +562,111 @@ fn hostile_pages_stay_bounded() {
     assert_eq!(Page::new(&rule).style("a").color, RED);
 
     let _ = Stylesheet::parse_declarations(&"a:b;".repeat(50_000));
+}
+
+/// The colors of all elements of this name in order, in a page where they are written alike.
+fn colors_of(source: &str, name: &str) -> Vec<Color> {
+    let page = Page::new(&format!("<!DOCTYPE html>{source}"));
+    page.document
+        .descendants(page.document.root())
+        .filter(|&id| page.document.kind(id) == NodeKind::Element && page.document.name(id) == name)
+        .map(|id| page.styles.get(id).color)
+        .collect()
+}
+
+const BLACK: Color = Color::rgb(0, 0, 0);
+
+#[test]
+fn elements_written_alike_differ_by_what_is_around_them() {
+    // By their ancestors, also those further up.
+    assert_eq!(
+        colors_of(
+            "<style>section p{color:red}aside>div p{color:blue}</style>\
+             <section><p>a</p></section><aside><div><p>b</p></div></aside><div><p>c</p></div>",
+            "p"
+        ),
+        [RED, BLUE, BLACK]
+    );
+    // By an ancestor's attribute, which is all that differs in the tags above them.
+    assert_eq!(
+        colors_of(
+            "<style>.x i{color:red}[data-y] i{color:blue}#z i{color:green}</style>\
+             <p class=x><i>a</i></p><p data-y><i>b</i></p><p id=z><i>c</i></p><p><i>d</i></p>",
+            "i"
+        ),
+        [RED, BLUE, GREEN, BLACK]
+    );
+}
+
+#[test]
+fn elements_written_alike_differ_by_their_neighbours() {
+    assert_eq!(
+        colors_of(
+            "<style>p:first-child{color:red}p:last-child{color:blue}</style>\
+             <div><p>a</p><p>b</p><p>c</p></div>",
+            "p"
+        ),
+        [RED, BLACK, BLUE]
+    );
+    assert_eq!(
+        colors_of(
+            "<style>h1+p{color:red}h2~p{color:blue}</style>\
+             <div><h1>x</h1><p>a</p><p>b</p></div><div><h2>y</h2><p>c</p><p>d</p></div>",
+            "p"
+        ),
+        [RED, BLACK, BLUE, BLUE]
+    );
+    assert_eq!(
+        colors_of(
+            "<style>p:empty{color:red}p:nth-child(2){color:blue}</style>\
+             <div><p></p><p>a</p></div>",
+            "p"
+        ),
+        [RED, BLUE]
+    );
+    // Also when it is an ancestor that the neighbours decide for.
+    assert_eq!(
+        colors_of(
+            "<style>p:first-child i{color:red}p:not(:first-child) i{color:blue}</style>\
+             <div><p><i>a</i></p><p><i>b</i></p></div>",
+            "i"
+        ),
+        [RED, BLUE]
+    );
+}
+
+#[test]
+fn rules_on_names_not_in_the_page_do_not_get_in_the_way() {
+    assert_eq!(
+        colors_of(
+            "<style>.none,p{color:red}.none p{color:blue}#none{color:green}</style><p>a",
+            "p"
+        ),
+        [RED]
+    );
+    // Quirks mode goes by names in any case.
+    let page = parse("<style>.ABC{color:red}</style><p class=abc t=a>x");
+    let sheets = document_stylesheets(&page, Viewport::default());
+    let styles = compute_styles(&page, &sheets, Viewport::default());
+    let paragraph = page
+        .descendants(page.root())
+        .find(|&id| page.name(id) == "p")
+        .unwrap();
+    assert_eq!(styles.get(paragraph).color, RED);
+    // States of a live page do not hold, but their opposite does.
+    assert_eq!(
+        colors_of(
+            "<style>p:hover{color:red}p:not(:hover){color:blue}</style><p>a",
+            "p"
+        ),
+        [BLUE]
+    );
+    // Links are found also with no type in the selector.
+    assert_eq!(
+        colors_of(
+            "<style>:link{color:red}</style><a href=x>a</a><a>b</a>",
+            "a"
+        ),
+        [RED, BLACK]
+    );
 }
