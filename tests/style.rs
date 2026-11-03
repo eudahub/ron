@@ -536,6 +536,35 @@ fn floats_and_roots_become_blocks() {
 }
 
 #[test]
+fn only_conditions_around_rules_that_can_match_make_a_difference() {
+    let narrow = Viewport {
+        width: 500.0,
+        height: 800.0,
+    };
+    let wide = Viewport::default();
+    let alike = |css: &str| styled(css).styles.conditions_hold_alike(narrow, wide);
+    assert!(!alike("@media (width>=600px) { .k { color: red } }"));
+    assert!(!alike("@media (width>=600px) { p { color: red } }"));
+    assert!(alike(
+        "@media (width>=600px) { .not-in-the-page { color: red } }"
+    ));
+    assert!(alike(
+        "@media (width>=600px) { #not-in-the-page { color: red } }"
+    ));
+    assert!(alike("@media (width>=9000px) { p { color: red } }"));
+    assert!(!alike(
+        "@media (width>=600px) { @media (height>=1px) { p { color: red } } }"
+    ));
+    assert!(!alike(
+        "@media (width>=600px) { .k, .not-in-the-page { top: 1px } }"
+    ));
+    // The condition may not hold now, and still count when it does.
+    let from_narrow = styled("@media (width<=500px) { .k { color: red } }");
+    assert!(!from_narrow.styles.conditions_hold_alike(narrow, wide));
+    assert!(alike("p { color: red }"));
+}
+
+#[test]
 fn media_conditions_can_be_ranges() {
     let viewport = Viewport {
         width: 1000.0,

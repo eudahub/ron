@@ -104,6 +104,12 @@ impl Stylesheet {
         true
     }
 
+    /// A condition with all those around it.
+    pub(super) fn media_chain(&self, media: u32) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(media), |&index| self.media_parents[index as usize])
+            .map(|index| &*self.media_queries[index as usize])
+    }
+
     /// The value of a declaration as written, without `!important`.
     #[must_use]
     pub fn value(&self, declaration: &Declaration) -> &str {

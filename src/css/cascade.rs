@@ -351,6 +351,9 @@ pub struct Styles {
     /// The styles with lengths that depend on the size of the view, parents before children.
     of_view: Vec<ViewStyle>,
     too_many_of_view: bool,
+    /// The `@media` conditions around rules that can match something in the document, which is
+    /// few of those in large style sheets. Only known once the whole document has been gone over.
+    conditions: Option<Vec<Box<str>>>,
 }
 
 /// What it takes to work out one style again for a view of another size, without going through the
@@ -370,6 +373,7 @@ impl Styles {
             limited: false,
             of_view: Vec::new(),
             too_many_of_view: false,
+            conditions: None,
         }
     }
 
@@ -383,7 +387,19 @@ impl Styles {
             limited: false,
             of_view: Vec::new(),
             too_many_of_view: false,
+            conditions: None,
         }
+    }
+
+    /// Whether views of these two sizes come to the same `@media` conditions, of those that make a
+    /// difference to this document.
+    #[must_use]
+    pub fn conditions_hold_alike(&self, one: Viewport, other: Viewport) -> bool {
+        self.conditions.as_ref().is_some_and(|conditions| {
+            conditions
+                .iter()
+                .all(|media| matches_media(media, one) == matches_media(media, other))
+        })
     }
 
     /// Works out the styles with lengths of the view again for a view of this size, which takes far
@@ -671,9 +687,18 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     if quirks {
         add_sheet(&QUIRKS_SHEET, &QUIRKS_RULES);
     }
+    let mut conditions_that_count: HashSet<&str> = HashSet::new();
     for (sheet, compiled) in authors.iter().zip(&compiled_authors) {
         let sheet = sheet.borrow();
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
+            if let Some(media) = rule.media
+                && whole_document
+                && rule.selectors.iter().any(|selector| {
+                    selector.pseudo_element.is_none() && !cannot_match(words, selector, quirks)
+                })
+            {
+                conditions_that_count.extend(sheet.media_chain(media));
+            }
             if rule
                 .media
                 .is_some_and(|media| !sheet.media_applies(media, viewport))
@@ -914,6 +939,9 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         result.of_node[id.index()] = number;
     }
     result.limited |= context.is_limited();
+    if whole_document {
+        result.conditions = Some(conditions_that_count.into_iter().map(Box::from).collect());
+    }
     progress.styles = result;
     progress.contexts = contexts;
     progress.known_tags = known_tags;
