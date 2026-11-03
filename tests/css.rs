@@ -1,6 +1,6 @@
 //! Stylesheet parsing, selector validity and selector matching.
 
-use ron::css::{Stylesheet, matches};
+use ron::css::{FontFace, Stylesheet, matches};
 use ron::html::{Document, NodeId, Tag, parse};
 
 fn sheet(source: &str) -> Stylesheet {
@@ -102,6 +102,147 @@ fn input_ending_early_closes_what_is_open() {
     assert_eq!(declarations("a { /* top: 1"), Vec::<String>::new());
     assert_eq!(declarations("a"), Vec::<String>::new());
     assert_eq!(declarations("@media print { a { top: 1"), ["top=1"]);
+}
+
+/// The only font of a sheet.
+fn font_face(source: &str) -> FontFace {
+    let faces = sheet(source).font_faces;
+    assert_eq!(faces.len(), 1, "{source}");
+    faces.into_iter().next().unwrap()
+}
+
+fn font_urls(source: &str) -> Vec<String> {
+    font_face(source)
+        .sources
+        .iter()
+        .map(|source| source.url.to_string())
+        .collect()
+}
+
+#[test]
+fn font_faces_are_kept() {
+    let face = font_face(
+        "@font-face{font-family:'A B';src:url(a.woff2) format('woff2'),url(\"b.woff\") \
+         format(\"woff\");font-weight:700;font-style:italic}",
+    );
+    assert_eq!(&*face.family, "A B");
+    assert_eq!(face.weight, (700, 700));
+    assert!(face.italic);
+    assert_eq!(face.media, None);
+    assert_eq!(&*face.sources[0].url, "a.woff2");
+    assert_eq!(face.sources[0].format.as_deref(), Some("woff2"));
+    assert_eq!(&*face.sources[1].url, "b.woff");
+    assert_eq!(face.sources[1].format.as_deref(), Some("woff"));
+}
+
+#[test]
+fn font_sources_that_cannot_be_used_are_left_out() {
+    assert_eq!(
+        font_urls("@font-face{font-family:A;src:local('Arial'),url(a.ttf) format('truetype')}"),
+        ["a.ttf"]
+    );
+    assert_eq!(
+        font_urls(
+            "@font-face{font-family:A;src:url(a.eot?#iefix) format('embedded-opentype'),\
+             url(a.svg#x) format('svg'),url(a.otf) format('opentype')}"
+        ),
+        ["a.otf"]
+    );
+    assert_eq!(
+        font_urls("@font-face{font-family:A;src:url(a) tech(variations) format(woff2)}"),
+        ["a"]
+    );
+    let many = format!(
+        "@font-face{{font-family:A;src:{}url(z)}}",
+        "url(a),".repeat(99)
+    );
+    assert_eq!(font_urls(&many).len(), 8);
+}
+
+#[test]
+fn a_comma_within_an_address_stays_there() {
+    let data = "data:font/woff2;base64,AAAA,BBBB";
+    assert_eq!(
+        font_urls(&format!(
+            "@font-face{{font-family:A;src:url({data}) format('woff2')}}"
+        )),
+        [data]
+    );
+    assert_eq!(
+        font_urls("@font-face{font-family:A;src:url('a,b.woff'),url(c)}"),
+        ["a,b.woff", "c"]
+    );
+}
+
+#[test]
+fn font_faces_need_a_name_and_a_source() {
+    for source in [
+        "@font-face{src:url(a.woff2)}",
+        "@font-face{font-family:A}",
+        "@font-face{font-family:A;src:local(x)}",
+        "@font-face{font-family:'';src:url(a)}",
+        "@font-face{",
+        "@font-face",
+    ] {
+        assert!(sheet(source).font_faces.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn font_weights_and_styles_come_in_every_form() {
+    let face = |descriptors: &str| {
+        font_face(&format!(
+            "@font-face{{font-family:A;src:url(a);{descriptors}}}"
+        ))
+    };
+    assert_eq!(face("").weight, (400, 400));
+    assert!(!face("").italic);
+    assert_eq!(face("font-weight:bold").weight, (700, 700));
+    assert_eq!(face("font-weight:normal").weight, (400, 400));
+    assert_eq!(face("font-weight:100 900").weight, (100, 900));
+    assert_eq!(face("font-weight:900 100").weight, (100, 900));
+    assert_eq!(
+        face("font-weight:bold;font-weight:wrong").weight,
+        (700, 700)
+    );
+    assert_eq!(face("font-weight:0").weight, (400, 400));
+    assert_eq!(face("font-weight:1 2 3").weight, (400, 400));
+    assert!(face("font-style:italic").italic);
+    assert!(face("font-style:oblique 10deg").italic);
+    assert!(!face("font-style:normal").italic);
+}
+
+#[test]
+fn font_faces_can_stand_within_other_rules() {
+    assert_eq!(
+        font_face("@media (width>=1px){@font-face{font-family:M;src:url(m)}}").media,
+        Some(0)
+    );
+    assert_eq!(
+        &*font_face("@layer x{@font-face{font-family:L;src:url(l)}}").family,
+        "L"
+    );
+    assert_eq!(
+        &*font_face("@supports (a:b){@font-face{font-family:S;src:url(s)}}").family,
+        "S"
+    );
+    assert_eq!(
+        &*font_face("@font-face{font-family:A;src:url(a);").family,
+        "A"
+    );
+}
+
+#[test]
+fn font_faces_are_not_rules_of_style() {
+    let stylesheet = sheet("@font-face{font-family:A;src:url(a)}p{top:1}");
+    assert_eq!(stylesheet.font_faces.len(), 1);
+    assert_eq!(stylesheet.rules.len(), 1);
+}
+
+#[test]
+fn a_sheet_holds_only_so_many_font_faces() {
+    let source = "@font-face{font-family:A;src:url(a)}".repeat(2000);
+    assert_eq!(sheet(&source).font_faces.len(), 1024);
 }
 
 #[test]
