@@ -206,17 +206,17 @@ fn write_signature(
 
 /// Whether nothing in this document can match, given all words it uses as an `id` or a `class`.
 /// This is true of most rules of large style sheets, and testing them would take most of the time.
-fn cannot_match(words: &HashSet<String>, selector: &Selector, quirks: bool) -> bool {
+fn cannot_match(words: Option<&HashSet<String>>, selector: &Selector, quirks: bool) -> bool {
     selector.compounds.iter().any(|compound| {
         compound.simple.iter().any(|simple| match simple {
             SimpleSelector::Pseudo(PseudoClass::Dynamic) => true,
-            SimpleSelector::Id(name) | SimpleSelector::Class(name) => {
+            SimpleSelector::Id(name) | SimpleSelector::Class(name) => words.is_some_and(|words| {
                 if quirks {
                     !words.contains(&name.to_ascii_lowercase())
                 } else {
                     !words.contains(&**name)
                 }
-            }
+            }),
             _ => false,
         })
     })
@@ -250,7 +250,7 @@ fn looks_at_neighbours(selector: &Selector) -> bool {
 fn add_selector<'a>(
     index: &mut RuleIndex<'a>,
     neighbour_index: &mut RuleIndex<'a>,
-    words: &HashSet<String>,
+    words: Option<&HashSet<String>>,
     selector: &'a Selector,
     rule: u32,
     quirks: bool,
@@ -341,6 +341,14 @@ pub struct Styles {
 }
 
 impl Styles {
+    fn empty() -> Self {
+        Self {
+            styles: vec![ComputedStyle::initial()],
+            of_node: Vec::new(),
+            limited: false,
+        }
+    }
+
     /// Initial styles for every node, which takes almost no time, for when the real ones can only
     /// be computed later.
     #[must_use]
@@ -460,6 +468,97 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
     authors: &[Sheet],
     viewport: Viewport,
 ) -> Styles {
+    let mut progress = StyleProgress::new();
+    cascade(
+        document,
+        authors,
+        viewport,
+        document.descendants(document.root()).skip(1),
+        true,
+        &mut progress,
+    );
+    let mut styles = progress.styles;
+    styles.styles.shrink_to_fit();
+    styles
+}
+
+/// How far styles have been computed for a document that is still arriving.
+pub struct StyleProgress {
+    styles: Styles,
+    /// How many nodes have their styles.
+    done: usize,
+    contexts: Vec<u32>,
+    known_tags: HashMap<(u32, u32), KnownTag>,
+    signatures: HashMap<String, u32>,
+    by_fingerprint: HashMap<u64, u32>,
+    root_font_size: Option<f32>,
+    custom_budget: usize,
+}
+
+impl Default for StyleProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StyleProgress {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            styles: Styles::empty(),
+            done: 0,
+            contexts: Vec::new(),
+            known_tags: HashMap::new(),
+            signatures: HashMap::new(),
+            by_fingerprint: HashMap::new(),
+            root_font_size: None,
+            custom_budget: MAX_CUSTOM_PROPERTY_BYTES,
+        }
+    }
+
+    /// The styles so far.
+    #[must_use]
+    pub fn styles(&self) -> &Styles {
+        &self.styles
+    }
+
+    /// How many nodes have their styles, from the first that came.
+    #[must_use]
+    pub fn done(&self) -> usize {
+        self.done
+    }
+}
+
+/// Computes styles for the nodes that have come since the last time. What depends on later nodes,
+/// such as `:last-child`, or on where a mistake in the page later moves a node, is only right once
+/// [`compute_styles`] goes over the whole document at the end.
+pub fn extend_styles<Sheet: Borrow<Stylesheet>>(
+    document: &Document,
+    authors: &[Sheet],
+    viewport: Viewport,
+    progress: &mut StyleProgress,
+) {
+    // The first node is the root, which has no style of its own.
+    let first = progress.done.max(1);
+    cascade(
+        document,
+        authors,
+        viewport,
+        document.nodes_from(first),
+        false,
+        progress,
+    );
+    progress.done = document.node_count();
+}
+
+fn cascade<Sheet: Borrow<Stylesheet>>(
+    document: &Document,
+    authors: &[Sheet],
+    viewport: Viewport,
+    nodes: impl Iterator<Item = NodeId>,
+    whole_document: bool,
+    progress: &mut StyleProgress,
+) {
     let quirks = document.is_quirks();
     let mut rules: Vec<(u8, &[Compiled])> = Vec::new();
     let mut compiled_authors: Vec<Vec<Vec<Compiled>>> = Vec::with_capacity(authors.len());
@@ -474,9 +573,15 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
         );
     }
     let mut variable_rules: HashMap<u32, VariableRule<'_>> = HashMap::new();
-    let mut custom_budget = MAX_CUSTOM_PROPERTY_BYTES;
-    let names = ElementNames::of_document(document);
-    let words = names.words(quirks);
+    let mut custom_budget = std::mem::replace(&mut progress.custom_budget, 0);
+    // Only a whole document tells which names it does not use.
+    let names = if whole_document {
+        ElementNames::of_document(document)
+    } else {
+        ElementNames::default()
+    };
+    let words = whole_document.then(|| names.words(quirks));
+    let words = words.as_ref();
     let mut index = RuleIndex::default();
     let mut neighbour_index = RuleIndex::default();
     let mut add_sheet = |sheet: &'static Stylesheet, compiled: &'static [Vec<Compiled>]| {
@@ -487,7 +592,7 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
                 add_selector(
                     &mut index,
                     &mut neighbour_index,
-                    &words,
+                    words,
                     selector,
                     number,
                     quirks,
@@ -517,7 +622,7 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
                 add_selector(
                     &mut index,
                     &mut neighbour_index,
-                    &words,
+                    words,
                     selector,
                     number,
                     quirks,
@@ -531,24 +636,21 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
     // For each element, what its tag and all those around it gave. Elements that are alike in that
     // match the same rules, apart from those that look at neighbours, so the rest are tested once.
     // Pages often repeat a few tags many thousands of times.
-    let mut contexts: Vec<u32> = vec![0; document.node_count()];
-    let mut known_tags: HashMap<(u32, u32), KnownTag> = HashMap::new();
+    let mut contexts = std::mem::take(&mut progress.contexts);
+    contexts.resize(document.node_count(), 0);
+    let mut known_tags = std::mem::take(&mut progress.known_tags);
     // Most of what differs between tags, like an address or a title, no selector looks at. So
     // tags count as alike if what selectors do look at is, which is their signature.
     let mut known_sources: HashMap<(u8, &str), (u32, bool)> = HashMap::new();
-    let mut signatures: HashMap<String, u32> = HashMap::new();
+    let mut signatures = std::mem::take(&mut progress.signatures);
     let mut signature_text = String::new();
-    let initial = ComputedStyle::initial();
-    let mut result = Styles {
-        styles: vec![initial],
-        of_node: vec![0; document.node_count()],
-        limited: false,
-    };
+    let mut result = std::mem::replace(&mut progress.styles, Styles::empty());
+    result.of_node.resize(document.node_count(), 0);
     let mut cache: HashMap<(u32, Vec<u32>, &str), u32> = HashMap::new();
-    let mut by_fingerprint: HashMap<u64, u32> = HashMap::new();
+    let mut by_fingerprint = std::mem::take(&mut progress.by_fingerprint);
     let mut matched: Vec<(u32, u32)> = Vec::new();
-    let mut root_font_size = None;
-    for id in document.descendants(document.root()).skip(1) {
+    let mut root_font_size = progress.root_font_size;
+    for id in nodes {
         let parent = document.parent(id).unwrap_or(document.root());
         let parent_style = result.of_node[parent.index()];
         if document.kind(id) != NodeKind::Element {
@@ -705,8 +807,13 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
         result.of_node[id.index()] = number;
     }
     result.limited |= context.is_limited();
-    result.styles.shrink_to_fit();
-    result
+    progress.styles = result;
+    progress.contexts = contexts;
+    progress.known_tags = known_tags;
+    progress.signatures = signatures;
+    progress.by_fingerprint = by_fingerprint;
+    progress.root_font_size = root_font_size;
+    progress.custom_budget = custom_budget;
 }
 
 /// Feeds what is written into a hasher, so that nothing needs to be stored.

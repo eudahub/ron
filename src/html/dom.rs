@@ -207,8 +207,17 @@ impl Document {
         self.nodes[id.0 as usize].open = open;
     }
 
-    pub(super) fn is_open(&self, id: NodeId) -> bool {
+    /// Whether an element can still get children, while the document is arriving.
+    #[must_use]
+    pub fn is_open(&self, id: NodeId) -> bool {
         self.node(id).open
+    }
+
+    /// All nodes in the order they came, in which the first is the root. Parents usually come
+    /// before their children, but mistakes in a page can move nodes around.
+    pub fn nodes_from(&self, first: usize) -> impl Iterator<Item = NodeId> + use<> {
+        let end = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);
+        (u32::try_from(first).unwrap_or(u32::MAX)..end).map(NodeId)
     }
 
     /// Extends a text node when the new piece directly follows it in the source.

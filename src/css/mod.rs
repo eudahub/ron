@@ -17,7 +17,8 @@ mod variables;
 mod css_parser;
 
 pub use cascade::{
-    SheetSource, Styles, compute_styles, document_sheet_sources, document_stylesheets,
+    SheetSource, StyleProgress, Styles, compute_styles, document_sheet_sources,
+    document_stylesheets, extend_styles,
 };
 pub use media::{Viewport, matches_media};
 pub use properties::{
