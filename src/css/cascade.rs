@@ -78,6 +78,7 @@ struct RuleIndex<'a> {
     links: Vec<IndexEntry<'a>>,
     others: Vec<IndexEntry<'a>>,
     uses_positions: bool,
+    seen: SeenNames,
 }
 
 /// What tests of a tag in its surroundings came to.
@@ -85,8 +86,122 @@ struct KnownTag {
     /// A number for this tag with everything around it, for the elements inside it to go by.
     context: u32,
     matched: Vec<(u32, u32)>,
-    /// With no style attribute and no hints.
-    plain: bool,
+}
+
+/// The names that some selector looks at. Whatever else a tag holds cannot change what it matches.
+#[derive(Default)]
+struct SeenNames {
+    /// In lowercase in quirks mode.
+    ids: HashSet<String>,
+    classes: HashSet<String>,
+    /// In lowercase.
+    attributes: HashSet<String>,
+}
+
+impl SeenNames {
+    fn note(&mut self, selector: &Selector, quirks: bool) {
+        let folded = |name: &str| {
+            if quirks {
+                name.to_ascii_lowercase()
+            } else {
+                name.to_owned()
+            }
+        };
+        for simple in selector
+            .compounds
+            .iter()
+            .flat_map(|compound| &compound.simple)
+        {
+            match simple {
+                SimpleSelector::Id(name) => {
+                    self.ids.insert(folded(name));
+                }
+                SimpleSelector::Class(name) => {
+                    self.classes.insert(folded(name));
+                }
+                SimpleSelector::Attribute { name, .. } => {
+                    self.attributes.insert(name.to_ascii_lowercase());
+                }
+                SimpleSelector::Pseudo(pseudo) => match pseudo {
+                    PseudoClass::AnyLink => {
+                        self.attributes.insert("href".to_owned());
+                    }
+                    PseudoClass::Checked => {
+                        self.attributes.insert("checked".to_owned());
+                        self.attributes.insert("selected".to_owned());
+                    }
+                    PseudoClass::Disabled | PseudoClass::Enabled => {
+                        self.attributes.insert("disabled".to_owned());
+                    }
+                    PseudoClass::Not(list) | PseudoClass::Is(list) => {
+                        for inner in list {
+                            self.note(inner, quirks);
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Writes down all of a tag that selectors can see, so that tags with the same text match the same.
+fn write_signature(
+    document: &Document,
+    id: NodeId,
+    seen: &SeenNames,
+    quirks: bool,
+    out: &mut String,
+) {
+    const SEPARATOR: char = '\0';
+    out.push_str(&document.name(id).to_ascii_lowercase());
+    out.push(SEPARATOR);
+    let folded = |value: &str| {
+        if quirks {
+            value.to_ascii_lowercase()
+        } else {
+            value.to_owned()
+        }
+    };
+    let mut seen_id = false;
+    let mut seen_class = false;
+    for attribute in document.attributes(id) {
+        let name = attribute.name.to_ascii_lowercase();
+        if name == "id" && !std::mem::replace(&mut seen_id, true) {
+            let value = folded(&attribute.decoded_value());
+            if seen.ids.contains(&value) {
+                out.push('#');
+                out.push_str(&value);
+                out.push(SEPARATOR);
+            }
+        }
+        if name == "class" && !std::mem::replace(&mut seen_class, true) {
+            let value = folded(&attribute.decoded_value());
+            let mut classes: Vec<&str> = value
+                .split_ascii_whitespace()
+                .filter(|class| seen.classes.contains(*class))
+                .collect();
+            classes.sort_unstable();
+            classes.dedup();
+            for class in classes {
+                out.push('.');
+                out.push_str(class);
+                out.push(SEPARATOR);
+            }
+        }
+        if seen.attributes.contains(&name) {
+            out.push('[');
+            out.push_str(&name);
+            out.push('=');
+            if let Some(value) = attribute.value {
+                out.push('=');
+                out.push_str(&attribute.decoded_value());
+                let _ = value;
+            }
+            out.push(SEPARATOR);
+        }
+    }
 }
 
 /// Whether nothing in this document can match, given all words it uses as an `id` or a `class`.
@@ -147,6 +262,7 @@ fn add_selector<'a>(
     if looks_at_neighbours(selector) {
         neighbour_index.add(selector, rule, quirks);
     } else {
+        index.seen.note(selector, quirks);
         index.add(selector, rule, quirks);
     }
 }
@@ -416,7 +532,12 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
     // match the same rules, apart from those that look at neighbours, so the rest are tested once.
     // Pages often repeat a few tags many thousands of times.
     let mut contexts: Vec<u32> = vec![0; document.node_count()];
-    let mut known_tags: HashMap<(u32, u8, &str), KnownTag> = HashMap::new();
+    let mut known_tags: HashMap<(u32, u32), KnownTag> = HashMap::new();
+    // Most of what differs between tags, like an address or a title, no selector looks at. So
+    // tags count as alike if what selectors do look at is, which is their signature.
+    let mut known_sources: HashMap<(u8, &str), (u32, bool)> = HashMap::new();
+    let mut signatures: HashMap<String, u32> = HashMap::new();
+    let mut signature_text = String::new();
     let initial = ComputedStyle::initial();
     let mut result = Styles {
         styles: vec![initial],
@@ -435,23 +556,39 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             continue;
         }
         let source = document.text(id);
-        let next_context = u32::try_from(known_tags.len() + 1).unwrap_or(u32::MAX);
-        let known = known_tags
-            .entry((contexts[parent.index()], document.tag(id) as u8, source))
+        let (signature, plain) = *known_sources
+            .entry((document.tag(id) as u8, source))
             .or_insert_with(|| {
-                let mut matched = Vec::new();
-                collect_matches(document, id, &index, &mut context, &mut matched);
+                signature_text.clear();
+                write_signature(document, id, &index.seen, quirks, &mut signature_text);
+                let next = u32::try_from(signatures.len()).unwrap_or(u32::MAX);
+                let signature = match signatures.get(signature_text.as_str()) {
+                    Some(&known) => known,
+                    None => {
+                        signatures.insert(signature_text.clone(), next);
+                        next
+                    }
+                };
                 let has_style_attribute = document.attributes(id).any(|attribute| {
                     attribute.name.eq_ignore_ascii_case("style") && attribute.value.is_some()
                 });
+                (
+                    signature,
+                    !has_style_attribute && presentational_hints(document, id).is_empty(),
+                )
+            });
+        let next_context = u32::try_from(known_tags.len() + 1).unwrap_or(u32::MAX);
+        let known = known_tags
+            .entry((contexts[parent.index()], signature))
+            .or_insert_with(|| {
+                let mut matched = Vec::new();
+                collect_matches(document, id, &index, &mut context, &mut matched);
                 KnownTag {
                     context: next_context,
                     matched,
-                    plain: !has_style_attribute && presentational_hints(document, id).is_empty(),
                 }
             });
         contexts[id.index()] = known.context;
-        let plain = known.plain;
         matched.clear();
         matched.extend_from_slice(&known.matched);
         collect_matches(document, id, &neighbour_index, &mut context, &mut matched);
@@ -720,8 +857,13 @@ fn collect_matches(
         }
     };
     let quirks = document.is_quirks();
-    // The values stay with the context, so these copies take its place only for a moment.
-    let (element_id, element_class) = context.id_and_class(id);
+    // The values stay with the context, so these copies take its place only for a moment. Many
+    // elements come here for an index with few rules, which needs none of it.
+    let (element_id, element_class) = if index.ids.is_empty() && index.classes.is_empty() {
+        (None, None)
+    } else {
+        context.id_and_class(id)
+    };
     let element_id = element_id.map(str::to_owned);
     let element_class = element_class.map(str::to_owned);
     if let Some(value) = element_id {
