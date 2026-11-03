@@ -528,8 +528,9 @@ impl ElementNames {
     }
 
     fn of(&mut self, document: &Document, element: NodeId) -> (Option<&str>, Option<&str>) {
-        if self.of_node.is_empty() {
-            self.of_node = vec![(NAMES_UNKNOWN, NAMES_UNKNOWN); document.node_count()];
+        if self.of_node.len() < document.node_count() {
+            self.of_node
+                .resize(document.node_count(), (NAMES_UNKNOWN, NAMES_UNKNOWN));
         }
         let index = element.index();
         if self.of_node[index].0 == NAMES_UNKNOWN {
@@ -583,6 +584,11 @@ impl<'a> MatchContext<'a> {
 
     pub(super) fn matches(&mut self, element: NodeId, selector: &Selector) -> bool {
         self.match_from(element, &selector.compounds).is_ok()
+    }
+
+    /// What has been read about elements, for going on later.
+    pub(super) fn into_names(self) -> ElementNames {
+        self.names
     }
 
     /// Whether the step budget ran out, so that some selectors counted as not matching.

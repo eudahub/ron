@@ -259,6 +259,11 @@ fn add_selector<'a>(
     if selector.pseudo_element.is_some() || cannot_match(words, selector, quirks) {
         return;
     }
+    // Places among siblings change as more arrives, and finding them takes going over all nodes.
+    // These wait for the whole document, where they then count.
+    if words.is_none() && selector_uses_positions(selector) {
+        return;
+    }
     if looks_at_neighbours(selector) {
         neighbour_index.add(selector, rule, quirks);
     } else {
@@ -493,6 +498,7 @@ pub struct StyleProgress {
     by_fingerprint: HashMap<u64, u32>,
     root_font_size: Option<f32>,
     custom_budget: usize,
+    names: ElementNames,
 }
 
 impl Default for StyleProgress {
@@ -513,6 +519,7 @@ impl StyleProgress {
             by_fingerprint: HashMap::new(),
             root_font_size: None,
             custom_budget: MAX_CUSTOM_PROPERTY_BYTES,
+            names: ElementNames::default(),
         }
     }
 
@@ -578,7 +585,7 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     let names = if whole_document {
         ElementNames::of_document(document)
     } else {
-        ElementNames::default()
+        std::mem::take(&mut progress.names)
     };
     let words = whole_document.then(|| names.words(quirks));
     let words = words.as_ref();
@@ -814,6 +821,9 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     progress.by_fingerprint = by_fingerprint;
     progress.root_font_size = root_font_size;
     progress.custom_budget = custom_budget;
+    if !whole_document {
+        progress.names = context.into_names();
+    }
 }
 
 /// Feeds what is written into a hasher, so that nothing needs to be stored.
@@ -989,10 +999,12 @@ fn collect_matches(
             }
         }
     }
-    test(index.tags.get(document.local_name(id).as_ref()), context);
-    let lower = document.name(id).to_ascii_lowercase();
-    if lower != document.local_name(id) {
-        test(index.tags.get(&lower), context);
+    if !index.tags.is_empty() {
+        test(index.tags.get(document.local_name(id).as_ref()), context);
+        let lower = document.name(id).to_ascii_lowercase();
+        if lower != document.local_name(id) {
+            test(index.tags.get(&lower), context);
+        }
     }
     if matches!(document.tag(id), Tag::A | Tag::Area) {
         test(Some(&index.links), context);
