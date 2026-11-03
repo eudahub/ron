@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use super::math::parse_math;
 use super::values::{Length, Unit, parse_length};
 
 /// More than this many repeats or lines are not made, whatever a page asks for.
@@ -154,6 +155,15 @@ fn track_size(word: &str, pixels: &impl Fn(Length) -> Option<f32>) -> Option<Tra
     if let Some(number) = word.strip_suffix("fr") {
         let share: f32 = number.parse().ok()?;
         return (share.is_finite() && share >= 0.0).then_some(TrackSize::Fr(share));
+    }
+    if let Some(math) = parse_math(word) {
+        // A track has no form for what depends on a percentage in a more complicated way.
+        let size = math.size(pixels)?;
+        return match (size.pixels(), size.as_plain_percent()) {
+            (Some(px), _) => Some(TrackSize::Px(px.max(0.0))),
+            (None, Some(percent)) => Some(TrackSize::Percent(percent)),
+            (None, None) => None,
+        };
     }
     let length = parse_length(word, false)?;
     if length.unit == Unit::Percent {

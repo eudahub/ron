@@ -1,11 +1,11 @@
 //! The properties ron understands, and reading declarations into them. Shorthands expand
-//! here. A value that is not understood drops its declaration, as CSS requires, which also
-//! means that `calc()` is ignored for now. Any `var()` in a declaration has been replaced by now;
-//! see `variables.rs`.
+//! here. A value that is not understood drops its declaration, as CSS requires. Any `var()` in a
+//! declaration has been replaced by now; see `variables.rs`.
 
 use std::sync::Arc;
 
 use super::grid::{GridLine, parse_areas, parse_line, parse_tracks};
+use super::math::{Math, parse_math};
 use super::values::{Color, Length, Unit, parse_color, parse_length, parse_url, split_words};
 
 macro_rules! keywords {
@@ -185,6 +185,7 @@ pub(super) enum Value {
     FlexAlign(FlexAlign),
     /// As written, which gets read when lengths in it can be resolved. It has been checked.
     GridText(Arc<str>),
+    Math(Arc<Math>),
     /// `larger` or `smaller` when true or false.
     FontRelative(bool),
 }
@@ -206,9 +207,6 @@ pub(super) fn compile(name: &str, value: &str, important: bool, out: &mut Vec<Co
 
 fn compile_inner(name: &str, value: &str, important: bool, out: &mut Vec<Compiled>) -> bool {
     let text = value.trim();
-    if text.contains("calc(") {
-        return false;
-    }
     let mut push = |prop: Prop, value: Value| {
         out.push(Compiled {
             prop,
@@ -273,17 +271,22 @@ fn alias(name: &str, text: &str, wide: Option<Value>, push: &mut impl FnMut(Prop
     true
 }
 
+/// A length, or an expression that comes to one.
+fn parse_length_or_math(text: &str) -> Option<Value> {
+    parse_length(text, false)
+        .map(Value::Length)
+        .or_else(|| parse_math(text).map(Value::Math))
+}
+
 fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
     use Prop as P;
     let empty = |word: &str| text.eq_ignore_ascii_case(word).then_some(Value::Empty);
-    let length = || parse_length(text, false).map(Value::Length);
+    let length = || parse_length_or_math(text);
     match prop {
         P::Display => Display::parse(text).map(Value::Display),
         P::Float => Float::parse(text).map(Value::Float),
         P::BackgroundRepeat => BackgroundRepeat::parse(text).map(Value::BackgroundRepeat),
-        P::BackgroundPositionX | P::BackgroundPositionY => {
-            parse_length(text, false).map(Value::Length)
-        }
+        P::BackgroundPositionX | P::BackgroundPositionY => length(),
         P::Clear => Clear::parse(text).map(Value::Clear),
         P::Position => Position::parse(text).map(Value::Position),
         P::TextAlign => match text.to_ascii_lowercase().as_str() {
@@ -436,7 +439,8 @@ fn parse_border_width(text: &str) -> Option<Value> {
         "thick" => px(5.0),
         _ => parse_length(text, false)
             .filter(|length| length.value >= 0.0)
-            .map(Value::Length),
+            .map(Value::Length)
+            .or_else(|| parse_math(text).map(Value::Math)),
     }
 }
 
@@ -462,7 +466,8 @@ fn parse_font_size(text: &str) -> Option<Value> {
         "smaller" => Some(Value::FontRelative(false)),
         _ => parse_length(text, false)
             .filter(|length| length.value >= 0.0)
-            .map(Value::Length),
+            .map(Value::Length)
+            .or_else(|| parse_math(text).map(Value::Math)),
     }
 }
 

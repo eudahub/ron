@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::grid::{GridAreas, GridLine, GridTrack, parse_areas, parse_line, parse_tracks};
+use super::math::{CalcRef, CalcSize, keep_calc};
 use super::media::Viewport;
 use super::properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
@@ -19,6 +20,21 @@ pub enum Size {
     Auto,
     Px(f32),
     Percent(f32),
+    /// Depends on a percentage in a way that takes more than the above.
+    Calc(CalcRef),
+}
+
+impl Size {
+    /// What a size of what comes from an expression is written as, when it is as simple as can be.
+    fn of_calc(calc: CalcSize) -> Option<Self> {
+        if let Some(px) = calc.pixels() {
+            Some(Self::Px(px))
+        } else if let Some(percent) = calc.as_plain_percent() {
+            Some(Self::Percent(percent))
+        } else {
+            keep_calc(calc).map(Self::Calc)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -259,6 +275,9 @@ impl Context {
                 Some(Size::Percent(length.value))
             }
             Value::Length(length) => self.pixels(*length).map(Size::Px),
+            Value::Math(math) => math
+                .size(&|length| self.pixels(length))
+                .and_then(Size::of_calc),
             _ => None,
         }
     }
@@ -291,6 +310,15 @@ pub(super) fn compute(
                 Unit::Percent => parent.font_size * length.value / 100.0,
                 _ => relative.pixels(*length).unwrap_or(parent.font_size),
             }
+        }
+        Some(Value::Math(math)) => {
+            let relative = Context {
+                font_size: parent.font_size,
+                root_font_size: root_font_size.unwrap_or(16.0),
+                viewport,
+            };
+            math.size(&|length| relative.pixels(length))
+                .map_or(parent.font_size, |size| size.of(parent.font_size).max(0.0))
         }
         Some(_) => parent.font_size,
     };
@@ -425,6 +453,13 @@ fn apply(
                         style.$($field).+ = px;
                     }
                 }
+                V::Math(math) => {
+                    // Percentages do not mean anything for these.
+                    let size = math.size(&|length| context.pixels(length));
+                    if let Some(px) = size.and_then(|size| size.pixels()) {
+                        style.$($field).+ = px.max(0.0);
+                    }
+                }
                 _ => {}
             }
         };
@@ -504,6 +539,12 @@ fn apply(
             V::Length(length) => {
                 if let Some(px) = context.pixels(*length) {
                     style.line_height = LineHeight::Px(px);
+                }
+            }
+            V::Math(math) => {
+                let size = math.size(&|length| context.pixels(length));
+                if let Some(size) = size {
+                    style.line_height = LineHeight::Px(size.of(context.font_size).max(0.0));
                 }
             }
             _ => {}

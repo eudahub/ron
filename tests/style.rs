@@ -1,9 +1,9 @@
 //! The cascade and computed styles.
 
 use ron::css::{
-    BackgroundRepeat, BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, ListStyleType,
-    Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition, Viewport,
-    WhiteSpace, compute_styles, document_stylesheets,
+    BackgroundRepeat, BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, LineHeight,
+    ListStyleType, Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition,
+    Viewport, WhiteSpace, compute_styles, document_stylesheets,
 };
 use ron::html::{Document, NodeId, NodeKind, parse};
 
@@ -365,6 +365,106 @@ fn backgrounds_keep_their_image_repeat_and_position() {
     );
 }
 
+fn width_of(value: &str) -> Size {
+    styled(&format!(
+        "p {{ font-size: 10px; width: 5px; width: {value} }}"
+    ))
+    .style("a")
+    .width
+}
+
+#[test]
+fn expressions_come_to_pixels_when_they_can() {
+    let pairs = [
+        ("calc(1px + 2px)", 3.0),
+        ("calc(10px - 3px)", 7.0),
+        ("calc(2 * 3px)", 6.0),
+        ("calc(3px * 2)", 6.0),
+        ("calc(9px / 3)", 3.0),
+        ("calc((1px + 2px) * (1 + 1))", 6.0),
+        ("calc(2em + 1px)", 21.0),
+        ("CALC(1PX + 1PX)", 2.0),
+        ("calc(calc(1px + 1px) * 2)", 4.0),
+        ("min(5px, 3px, 9px)", 3.0),
+        ("max(5px, 3px)", 5.0),
+        ("clamp(10px, 5px, 20px)", 10.0),
+        ("clamp(10px, 15px, 20px)", 15.0),
+        ("clamp(10px, 25px, 20px)", 20.0),
+        ("calc(min(5px, 3px) + 1px)", 4.0),
+        ("calc(0)", 0.0),
+    ];
+    for (value, wanted) in pairs {
+        assert_eq!(width_of(value), Size::Px(wanted), "{value}");
+    }
+}
+
+#[test]
+fn expressions_with_a_percentage_wait_for_layout() {
+    assert_eq!(width_of("calc(50%)"), Size::Percent(50.0));
+    assert_eq!(width_of("calc(25% * 2)"), Size::Percent(50.0));
+    let wide = |value: &str, whole: f32| match width_of(value) {
+        Size::Calc(calc) => calc.of(whole),
+        other => panic!("{value} gave {other:?}"),
+    };
+    assert_eq!(wide("calc(100% - 20px)", 200.0), 180.0);
+    assert_eq!(wide("calc(50% + 1em)", 200.0), 110.0);
+    assert_eq!(wide("min(100%, 960px)", 500.0), 500.0);
+    assert_eq!(wide("min(100%, 960px)", 2000.0), 960.0);
+    assert_eq!(wide("max(50%, 300px)", 200.0), 300.0);
+    assert_eq!(wide("clamp(100px, 50%, 300px)", 100.0), 100.0);
+    assert_eq!(wide("clamp(100px, 50%, 300px)", 400.0), 200.0);
+    assert_eq!(wide("clamp(100px, 50%, 300px)", 1000.0), 300.0);
+    assert_eq!(wide("calc(min(100%, 500px) - 40px)", 1000.0), 460.0);
+    assert_eq!(wide("calc(2 * min(50%, 100px))", 1000.0), 200.0);
+    // The low bound goes before the high one, when they cross.
+    assert_eq!(wide("clamp(300px, 50%, 100px)", 1000.0), 300.0);
+}
+
+#[test]
+fn expressions_that_make_no_sense_are_dropped() {
+    for value in [
+        "calc(1px+1px)",
+        "calc(1px -1px)",
+        "calc(1px + 1)",
+        "calc(1px * 1px)",
+        "calc(1px / 0)",
+        "calc(1px / 1px)",
+        "calc()",
+        "calc(1px",
+        "calc(1px))",
+        "min()",
+        "clamp(1px, 2px)",
+        "calc(1foo + 1px)",
+        "unknown(1px)",
+        "calc(1e39px + 1e39px)",
+        "calc(min(10%, 20%, 30%))",
+    ] {
+        assert_eq!(width_of(value), Size::Px(5.0), "{value}");
+    }
+    let deep = format!("{}1px{}", "calc(".repeat(1000), ")".repeat(1000));
+    assert_eq!(width_of(&deep), Size::Px(5.0));
+}
+
+#[test]
+fn expressions_work_in_all_that_takes_a_length() {
+    let page = styled(
+        "p { font-size: 10px; margin: calc(1px + 1px) calc(3px * 2); padding-left: calc(5% + 1px);
+             border: calc(1px + 1px) solid red; line-height: calc(1em + 2px);
+             top: calc(1px + 1px); gap: calc(1px + 2px) }
+         div { font-size: 20px }
+         div p { font-size: calc(50% + 1px) }",
+    );
+    let style = page.style("a");
+    assert_eq!(style.margin.top, Size::Px(2.0));
+    assert_eq!(style.margin.right, Size::Px(6.0));
+    assert!(matches!(style.padding.left, Size::Calc(_)));
+    assert_eq!(style.border_width.top, 2.0);
+    assert_eq!(style.offsets.top, Size::Px(2.0));
+    assert_eq!(style.row_gap, 3.0);
+    assert_eq!(style.font_size, 11.0);
+    assert_eq!(style.line_height, LineHeight::Px(13.0));
+}
+
 #[test]
 fn values_it_cannot_read_are_dropped() {
     assert_eq!(
@@ -372,7 +472,7 @@ fn values_it_cannot_read_are_dropped() {
         RED
     );
     assert_eq!(
-        styled("p { width: 5px; width: calc(1px + 1px) }")
+        styled("p { width: 5px; width: calc(1px+1px) }")
             .style("a")
             .width,
         Size::Px(5.0)

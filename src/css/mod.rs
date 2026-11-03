@@ -2,6 +2,7 @@
 
 mod cascade;
 mod grid;
+mod math;
 mod media;
 mod properties;
 mod selector;
@@ -22,6 +23,7 @@ pub use cascade::{
     document_stylesheets, extend_styles,
 };
 pub use grid::{GridArea, GridAreas, GridLine, GridTrack, TrackSize};
+pub use math::{CalcRef, CalcSize, Linear};
 pub use media::{Viewport, matches_media};
 pub use properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
