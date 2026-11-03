@@ -1,13 +1,29 @@
 //! Reads attributes from the source text of a tag, on demand and without copying.
 
+use std::borrow::Cow;
+
+use super::entities::{Context, decode};
 use super::tokenizer::{is_html_space, tag_name};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Attribute<'a> {
     /// The name as written; HTML names are case-insensitive.
     pub name: &'a str,
-    /// The value as written, with character references not yet decoded.
+    /// The value as written, with character references not decoded.
     pub value: Option<&'a str>,
+}
+
+impl<'a> Attribute<'a> {
+    /// The value with character references decoded; empty for an attribute without one.
+    #[must_use]
+    pub fn decoded_value(&self) -> Cow<'a, str> {
+        let value = self.value.unwrap_or("");
+        if value.contains('\0') {
+            let replaced = value.replace('\0', "\u{fffd}");
+            return Cow::Owned(decode(&replaced, Context::Attribute).into_owned());
+        }
+        decode(value, Context::Attribute)
+    }
 }
 
 /// Iterates over the attributes of a start tag token's text.

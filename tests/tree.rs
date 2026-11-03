@@ -258,6 +258,31 @@ fn elements_read_attributes_from_the_source() {
 }
 
 #[test]
+fn character_references_are_decoded_when_read() {
+    let document = parse(
+        "<p title=\"a&amp;b&copy=c\">&#169; &copy; &amp &#x80; &nosuch; &#0;</p><title>&lt;</title><style>&lt;</style>\r\n",
+    );
+    let find = |tag: Tag| {
+        document
+            .descendants(document.root())
+            .find(|&id| document.tag(id) == tag)
+            .unwrap()
+    };
+    let paragraph = find(Tag::P);
+    let text = document.first_child(paragraph).unwrap();
+    assert_eq!(
+        document.decoded_text(text),
+        "\u{a9} \u{a9} & \u{20ac} &nosuch; \u{fffd}"
+    );
+    let attribute = document.attributes(paragraph).next().unwrap();
+    assert_eq!(attribute.decoded_value(), "a&b&copy=c");
+    let title = document.first_child(find(Tag::Title)).unwrap();
+    assert_eq!(document.decoded_text(title), "<");
+    let style = document.first_child(find(Tag::Style)).unwrap();
+    assert_eq!(document.decoded_text(style), "&lt;");
+}
+
+#[test]
 fn reopened_formatting_keeps_its_attributes() {
     let document = parse("<p><font size=1>a</p><p>b");
     let fonts: Vec<_> = document

@@ -15,7 +15,8 @@ page can be shown before it has fully arrived.
 The tree follows the HTML tree construction rules, including implied elements, implied
 end tags and the repair of misnested formatting. Not implemented yet: moving misplaced
 table content in front of the table, `<template>` contents, and the separate rules of SVG
-and MathML. Character references are not decoded yet.
+and MathML. Character references stay as written in the source; `decoded_text` and
+`decoded_value` decode them when read.
 
 Nodes take 28 bytes each and refer to the source, which the document keeps; text and
 attributes are not copied. As a result text interrupted by an ignored tag stays as two
@@ -33,8 +34,7 @@ needed a clone, and `is_formatting_limited` reports it.
 `ron::html::Tokenizer` splits a document into text, tags, comments, declarations and
 raw-text content (`<script>`, `<style>`, `<title>`...). It accepts every input, including
 broken markup, and runs in linear time. Attributes are read on demand from the source
-text of a tag with `ron::html::attributes`, without copying. Character references are
-not decoded yet.
+text of a tag with `ron::html::attributes`, without copying.
 
 `ron::html::StreamTokenizer` does the same for a document that arrives in pieces, as from
 a network. Call `feed` with each piece, `next_token` until it returns `None`, and `finish`
@@ -58,6 +58,7 @@ target/release/ron-dump --tree page.html   # the document tree
 target/release/ron-dump --memory page.html # memory and time while parsing as it is read
 cargo test
 RON_CORPUS_DIR=pages cargo test --release -- --ignored  # also real .html files from a directory
+RON_HTML5LIB_DIR=dat cargo test --release --test html5lib -- --ignored --nocapture
 ```
 
 `generated/html_parser.rs` is generated and checked in, so building needs only Cargo.
@@ -67,3 +68,9 @@ After changing the grammar, regenerate it with `ag` from
 ```sh
 ag --emit-rust-parser generated/html_parser.rs grammars/html.ag
 ```
+
+`RON_HTML5LIB_DIR` names a directory of html5lib tree construction `.dat` files. They moved
+to web-platform-tests in 2026; the last version in that format is in the history of
+[html5lib-tests](https://github.com/html5lib/html5lib-tests), in the parent of commit
+`224991e`. `generated/html_entities.rs` comes from the `entities.json` of the HTML standard
+through `tools/generate_entities.py`.

@@ -2,6 +2,7 @@
 
 mod attributes;
 mod dom;
+mod entities;
 mod parser;
 mod tag;
 mod tokenizer;

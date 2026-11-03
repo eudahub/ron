@@ -1,6 +1,9 @@
 //! The document tree: nodes in an array, with text and attributes kept in the source.
 
+use std::borrow::Cow;
+
 use super::attributes::{Attributes, attributes};
+use super::entities::{Context, decode};
 use super::tag::Tag;
 use super::tokenizer::tag_name;
 
@@ -206,6 +209,30 @@ impl Document {
         let node = self.node(id);
         let start = node.start as usize;
         &self.source[start..start + node.length as usize]
+    }
+
+    /// The content of a text node as it should be shown: character references decoded,
+    /// except in elements whose content is not markup, and line ends normalized.
+    #[must_use]
+    pub fn decoded_text(&self, id: NodeId) -> Cow<'_, str> {
+        let raw = self.text(id);
+        let parent = self
+            .parent(id)
+            .map_or(Tag::Other, |parent| self.tag(parent));
+        let decoded = if parent.is_raw_text() && !matches!(parent, Tag::Title | Tag::Textarea) {
+            Cow::Borrowed(raw)
+        } else {
+            decode(raw, Context::Text)
+        };
+        if !decoded.contains(['\r', '\0']) {
+            return decoded;
+        }
+        let lines = decoded.replace("\r\n", "\n").replace('\r', "\n");
+        Cow::Owned(if parent.is_raw_text() {
+            lines.replace('\0', "\u{fffd}")
+        } else {
+            lines.replace('\0', "")
+        })
     }
 
     /// The element name: lowercase for known tags, as written otherwise.
