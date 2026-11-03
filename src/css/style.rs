@@ -118,6 +118,7 @@ pub struct ComputedStyle {
     pub order: i32,
     pub row_gap: f32,
     pub column_gap: f32,
+    pub z_index: Option<i32>,
 }
 
 impl ComputedStyle {
@@ -178,6 +179,7 @@ impl ComputedStyle {
             order: 0,
             row_gap: 0.0,
             column_gap: 0.0,
+            z_index: None,
         }
     }
 
@@ -549,5 +551,13 @@ fn apply(
         P::Order => set!(order, V::Number(order) => *order as i32),
         P::RowGap => width!(row_gap),
         P::ColumnGap => width!(column_gap),
+        P::ZIndex => match value {
+            V::Inherit => style.z_index = parent.z_index,
+            V::Initial | V::Empty => style.z_index = None,
+            // It was read as a whole number, so nothing is lost.
+            #[allow(clippy::cast_possible_truncation)]
+            V::Number(index) => style.z_index = Some(*index as i32),
+            _ => {}
+        },
     }
 }

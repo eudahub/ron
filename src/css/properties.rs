@@ -135,7 +135,7 @@ properties! {
     FlexDirection "flex-direction" FlexWrap "flex-wrap" JustifyContent "justify-content"
     AlignItems "align-items" AlignSelf "align-self" FlexGrow "flex-grow"
     FlexShrink "flex-shrink" FlexBasis "flex-basis" Order "order"
-    RowGap "row-gap" ColumnGap "column-gap"
+    RowGap "row-gap" ColumnGap "column-gap" ZIndex "z-index"
 }
 
 /// `text-decoration-line` bits.
@@ -311,6 +311,11 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
             .parse::<i32>()
             .ok()
             .map(|order| Value::Number(order as f32)),
+        P::ZIndex => empty("auto").or_else(|| {
+            text.parse::<i32>()
+                .ok()
+                .map(|index| Value::Number(index as f32))
+        }),
         P::FlexBasis => empty("auto").or_else(|| empty("content")).or_else(length),
         P::RowGap | P::ColumnGap => text
             .eq_ignore_ascii_case("normal")
