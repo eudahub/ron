@@ -15,8 +15,10 @@ mod values;
 #[path = "../../generated/css_parser.rs"]
 mod css_parser;
 
-pub use cascade::{Styles, compute_styles, document_stylesheets};
-pub use media::Viewport;
+pub use cascade::{
+    SheetSource, Styles, compute_styles, document_sheet_sources, document_stylesheets,
+};
+pub use media::{Viewport, matches_media};
 pub use properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle,
     LINE_THROUGH, ListStyleType, OVERLINE, Overflow, Position, TextAlign, TextTransform, UNDERLINE,

@@ -1,6 +1,7 @@
 //! The cascade: finds the rules that match each element and computes its style. Elements
 //! with the same parent style and the same matched rules share one computed style.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hasher};
@@ -190,14 +191,73 @@ pub fn document_stylesheets(document: &Document, viewport: Viewport) -> Vec<Styl
         .collect()
 }
 
+/// Where a style sheet of a document comes from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SheetSource {
+    /// The content of a `<style>` element.
+    Inline { text: String, media: Option<String> },
+    /// A `<link rel=stylesheet>`, which the caller may fetch.
+    Link { href: String, media: Option<String> },
+}
+
+/// The style sheets of a document in order, whatever the size of the view. Those of a type other
+/// than CSS and alternative ones are left out.
+#[must_use]
+pub fn document_sheet_sources(document: &Document) -> Vec<SheetSource> {
+    let mut sources = Vec::new();
+    for id in document.descendants(document.root()) {
+        if document.kind(id) != NodeKind::Element {
+            continue;
+        }
+        let tag = document.tag(id);
+        if tag != Tag::Style && tag != Tag::Link {
+            continue;
+        }
+        let attribute = |name: &str| {
+            document
+                .attributes(id)
+                .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
+                .map(|attribute| attribute.decoded_value().into_owned())
+        };
+        if attribute("type").is_some_and(|kind| {
+            let kind = kind.trim();
+            !kind.is_empty() && !kind.eq_ignore_ascii_case("text/css")
+        }) {
+            continue;
+        }
+        let media = attribute("media");
+        if tag == Tag::Style {
+            if let Some(text) = document.first_child(id) {
+                sources.push(SheetSource::Inline {
+                    text: document.decoded_text(text).into_owned(),
+                    media,
+                });
+            }
+        } else if attribute("rel").is_some_and(|rel| {
+            let mut words = rel.split_ascii_whitespace();
+            let is_sheet = words.clone().any(|word| word.eq_ignore_ascii_case("stylesheet"));
+            is_sheet && !words.any(|word| word.eq_ignore_ascii_case("alternate"))
+        }) && let Some(href) = attribute("href")
+        {
+            sources.push(SheetSource::Link { href, media });
+        }
+    }
+    sources
+}
+
 /// Computes the style of every element from the default styles and these author sheets.
 /// Walks the tree in document order, without recursion.
 #[must_use]
-pub fn compute_styles(document: &Document, authors: &[Stylesheet], viewport: Viewport) -> Styles {
+pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
+    document: &Document,
+    authors: &[Sheet],
+    viewport: Viewport,
+) -> Styles {
     let quirks = document.is_quirks();
     let mut rules: Vec<(u8, &[Compiled])> = Vec::new();
     let mut compiled_authors: Vec<Vec<Vec<Compiled>>> = Vec::with_capacity(authors.len());
     for sheet in authors {
+        let sheet = sheet.borrow();
         compiled_authors.push(
             sheet
                 .rules
@@ -221,6 +281,7 @@ pub fn compute_styles(document: &Document, authors: &[Stylesheet], viewport: Vie
         add_sheet(&QUIRKS_SHEET, &QUIRKS_RULES);
     }
     for (sheet, compiled) in authors.iter().zip(&compiled_authors) {
+        let sheet = sheet.borrow();
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
             if rule
                 .media

@@ -20,7 +20,8 @@ impl Default for Viewport {
 
 /// Whether a media query list holds. What is not understood counts as false, as a
 /// browser that lacks a feature must treat it.
-pub(super) fn matches_media(list: &str, viewport: Viewport) -> bool {
+#[must_use]
+pub fn matches_media(list: &str, viewport: Viewport) -> bool {
     let list = list.trim();
     list.is_empty() || list.split(',').any(|query| matches_query(query, viewport))
 }
