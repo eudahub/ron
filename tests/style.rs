@@ -1,9 +1,9 @@
 //! The cascade and computed styles.
 
 use ron::css::{
-    BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, ListStyleType, Size, Styles,
-    Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition, Viewport, WhiteSpace,
-    compute_styles, document_stylesheets,
+    BackgroundRepeat, BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, ListStyleType,
+    Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition, Viewport,
+    WhiteSpace, compute_styles, document_stylesheets,
 };
 use ron::html::{Document, NodeId, parse};
 
@@ -100,10 +100,22 @@ fn generic_monospace_is_smaller_as_in_firefox() {
     assert_eq!(page.style("inner").font_size, 12.0, "not again when nested");
     assert_eq!(page.style("code").font_size, 12.0);
     assert_eq!(page.style("scaled").font_size, 15.0);
-    assert_eq!(page.style("own").font_size, 18.0, "a size that is set stays");
-    assert_eq!(page.style("css").font_size, 12.0, "with the family from an author too");
+    assert_eq!(
+        page.style("own").font_size,
+        18.0,
+        "a size that is set stays"
+    );
+    assert_eq!(
+        page.style("css").font_size,
+        12.0,
+        "with the family from an author too"
+    );
     assert_eq!(page.style("back").font_size, 16.0, "and back again");
-    assert_eq!(page.style("named").font_size, 16.0, "only the generic family");
+    assert_eq!(
+        page.style("named").font_size,
+        16.0,
+        "only the generic family"
+    );
     assert_eq!(page.style("hack").font_size, 16.0, "the way pages avoid it");
 }
 
@@ -281,6 +293,45 @@ fn shorthands_expand() {
         styled("p { border: 2px }").style("a").border_width.left,
         0.0,
         "no style, no border"
+    );
+}
+
+#[test]
+fn backgrounds_keep_their_image_repeat_and_position() {
+    let style = |css: &str| styled(&format!("p {{ {css} }}"));
+    let page = style("background: url(a.png) no-repeat right 5px red");
+    let s = page.style("a");
+    assert_eq!(s.background_image.as_deref(), Some("a.png"));
+    assert_eq!(s.background_repeat, BackgroundRepeat::NoRepeat);
+    assert_eq!(s.background_position_x, Size::Percent(100.0));
+    assert_eq!(s.background_position_y, Size::Px(5.0));
+    assert_eq!(s.background_color, RED);
+
+    let page = style(
+        "background-image: url(a.png); background-repeat: repeat-x; background-position: top center",
+    );
+    let s = page.style("a");
+    assert_eq!(s.background_repeat, BackgroundRepeat::RepeatX);
+    assert_eq!(s.background_position_x, Size::Percent(50.0));
+    assert_eq!(s.background_position_y, Size::Percent(0.0));
+
+    let page = style("background: url(a.png) center / cover no-repeat");
+    let s = page.style("a");
+    assert_eq!(s.background_position_x, Size::Percent(50.0));
+    assert_eq!(s.background_position_y, Size::Percent(50.0));
+
+    let page = style("background-repeat: no-repeat; background: red");
+    assert_eq!(
+        page.style("a").background_repeat,
+        BackgroundRepeat::Repeat,
+        "the shorthand resets"
+    );
+    assert_eq!(page.style("a").background_image, None);
+    assert_eq!(
+        style("background: nonsense red")
+            .style("a")
+            .background_color,
+        Color::TRANSPARENT
     );
 }
 

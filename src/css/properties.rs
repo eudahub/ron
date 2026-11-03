@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::values::{Color, Length, parse_color, parse_length, parse_url, split_words};
+use super::values::{Color, Length, Unit, parse_color, parse_length, parse_url, split_words};
 
 macro_rules! keywords {
     ($(#[$meta:meta])* $name:ident { $($variant:ident $text:literal)* }) => {
@@ -34,6 +34,9 @@ keywords!(Display {
     Flex "flex" InlineFlex "inline-flex" Grid "grid" InlineGrid "inline-grid"
 });
 keywords!(Float { None "none" Left "left" Right "right" });
+keywords!(BackgroundRepeat {
+    Repeat "repeat" RepeatX "repeat-x" RepeatY "repeat-y" NoRepeat "no-repeat"
+});
 keywords!(Clear { None "none" Left "left" Right "right" Both "both" });
 keywords!(Position {
     Static "static" Relative "relative" Absolute "absolute" Fixed "fixed" Sticky "sticky"
@@ -90,6 +93,8 @@ properties! {
     Display "display" Float "float" Clear "clear" Position "position"
     Top "top" Right "right" Bottom "bottom" Left "left"
     Color "color" BackgroundColor "background-color" BackgroundImage "background-image"
+    BackgroundRepeat "background-repeat" BackgroundPositionX "background-position-x"
+    BackgroundPositionY "background-position-y"
     FontFamily "font-family" FontSize "font-size" FontStyle "font-style" FontWeight "font-weight"
     LineHeight "line-height" TextAlign "text-align" TextIndent "text-indent"
     WhiteSpace "white-space" TextDecoration "text-decoration-line"
@@ -132,6 +137,7 @@ pub(super) enum Value {
     Decoration(u8),
     Display(Display),
     Float(Float),
+    BackgroundRepeat(BackgroundRepeat),
     Clear(Clear),
     Position(Position),
     TextAlign(TextAlign),
@@ -240,6 +246,10 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
     match prop {
         P::Display => Display::parse(text).map(Value::Display),
         P::Float => Float::parse(text).map(Value::Float),
+        P::BackgroundRepeat => BackgroundRepeat::parse(text).map(Value::BackgroundRepeat),
+        P::BackgroundPositionX | P::BackgroundPositionY => {
+            parse_length(text, false).map(Value::Length)
+        }
         P::Clear => Clear::parse(text).map(Value::Clear),
         P::Position => Position::parse(text).map(Value::Position),
         P::TextAlign => match text.to_ascii_lowercase().as_str() {
@@ -433,7 +443,14 @@ fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
             P::BorderBottomColor,
         ],
         "border-left" => &[P::BorderLeftWidth, P::BorderLeftStyle, P::BorderLeftColor],
-        "background" => &[P::BackgroundColor, P::BackgroundImage],
+        "background" => &[
+            P::BackgroundColor,
+            P::BackgroundImage,
+            P::BackgroundRepeat,
+            P::BackgroundPositionX,
+            P::BackgroundPositionY,
+        ],
+        "background-position" => &[P::BackgroundPositionX, P::BackgroundPositionY],
         "font" => &[
             P::FontStyle,
             P::FontWeight,
@@ -473,6 +490,14 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
             expand_border(longhands, text, push)
         }
         "background" => expand_background(text, push),
+        "background-position" => match parse_position(&split_words(text)) {
+            Some((x, y)) => {
+                push(Prop::BackgroundPositionX, Value::Length(x));
+                push(Prop::BackgroundPositionY, Value::Length(y));
+                true
+            }
+            None => false,
+        },
         "font" => expand_font(text, push),
         "list-style" => expand_list_style(text, push),
         _ => false,
@@ -539,10 +564,62 @@ fn expand_border(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Val
     true
 }
 
-/// Only the color and image of `background` are kept; position and repeat words are
-/// accepted, so that they do not void the declaration.
+fn percent(value: f32) -> Length {
+    Length {
+        value,
+        unit: Unit::Percent,
+    }
+}
+
+/// Reads up to two position words, which keywords can give in either order.
+fn parse_position(words: &[&str]) -> Option<(Length, Length)> {
+    if words.is_empty() || words.len() > 2 {
+        return None;
+    }
+    let keyword = |word: &str| match word.to_ascii_lowercase().as_str() {
+        "left" => Some((true, 0.0)),
+        "right" => Some((true, 100.0)),
+        "top" => Some((false, 0.0)),
+        "bottom" => Some((false, 100.0)),
+        _ => None,
+    };
+    let center = |word: &str| word.eq_ignore_ascii_case("center");
+    let (mut x, mut y) = (None, None);
+    for word in words {
+        if let Some((horizontal, value)) = keyword(word) {
+            let side = if horizontal { &mut x } else { &mut y };
+            if side.is_some() {
+                return None;
+            }
+            *side = Some(percent(value));
+        }
+    }
+    for word in words {
+        if keyword(word).is_some() {
+            continue;
+        }
+        let value = if center(word) {
+            percent(50.0)
+        } else {
+            parse_length(word, false)?
+        };
+        if x.is_none() {
+            x = Some(value);
+        } else if y.is_none() {
+            y = Some(value);
+        } else {
+            return None;
+        }
+    }
+    Some((x.unwrap_or(percent(50.0)), y.unwrap_or(percent(50.0))))
+}
+
+/// `background` takes a color, an image, a repeat and a position. What it cannot use, as its
+/// size and attachment, is accepted so that it does not void the declaration.
 fn expand_background(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
-    let (mut color, mut image) = (None, None);
+    let (mut color, mut image, mut repeat) = (None, None, None);
+    let mut position = Vec::new();
+    let mut after_slash = false;
     for word in split_words(text) {
         let lower = word.to_ascii_lowercase();
         if lower == "none" {
@@ -552,39 +629,56 @@ fn expand_background(text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
             image = Some(Value::Url(url));
         } else if let Some(value) = parse_color_value(word) {
             color = Some(value);
-        } else if !(matches!(
+        } else if let Some(value) = BackgroundRepeat::parse(word) {
+            repeat = Some(value);
+        } else if lower == "/" {
+            after_slash = true;
+        } else if matches!(
             lower.as_str(),
-            "repeat"
-                | "repeat-x"
-                | "repeat-y"
-                | "no-repeat"
-                | "space"
+            "space"
                 | "round"
                 | "scroll"
                 | "fixed"
                 | "local"
-                | "left"
-                | "right"
-                | "top"
-                | "bottom"
-                | "center"
-                | "/"
-                | "cover"
-                | "contain"
-                | "auto"
                 | "border-box"
                 | "padding-box"
                 | "content-box"
-        ) || parse_length(word, false).is_some())
+                | "cover"
+                | "contain"
+                | "auto"
+        ) {
+            continue;
+        } else if after_slash {
+            // The size that follows a slash is not kept.
+        } else if matches!(
+            lower.as_str(),
+            "left" | "right" | "top" | "bottom" | "center"
+        ) || parse_length(word, false).is_some()
         {
+            position.push(word);
+        } else {
             return false;
         }
     }
+    let (x, y) = if position.is_empty() {
+        (percent(0.0), percent(0.0))
+    } else {
+        let Some(place) = parse_position(&position) else {
+            return false;
+        };
+        place
+    };
     push(
         Prop::BackgroundColor,
         color.unwrap_or(Value::Color(Color::TRANSPARENT)),
     );
     push(Prop::BackgroundImage, image.unwrap_or(Value::Empty));
+    push(
+        Prop::BackgroundRepeat,
+        Value::BackgroundRepeat(repeat.unwrap_or(BackgroundRepeat::Repeat)),
+    );
+    push(Prop::BackgroundPositionX, Value::Length(x));
+    push(Prop::BackgroundPositionY, Value::Length(y));
     true
 }
 

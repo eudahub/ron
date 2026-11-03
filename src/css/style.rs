@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use super::media::Viewport;
 use super::properties::{
-    BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle, ListStyleType,
-    Overflow, Position, Prop, TextAlign, TextTransform, Value, VerticalAlign, Visibility,
-    WhiteSpace,
+    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle,
+    ListStyleType, Overflow, Position, Prop, TextAlign, TextTransform, Value, VerticalAlign,
+    Visibility, WhiteSpace,
 };
 use super::values::{Color, Length, Unit};
 
@@ -88,6 +88,11 @@ pub struct ComputedStyle {
     pub text_decoration: u8,
     pub background_color: Color,
     pub background_image: Option<Arc<str>>,
+    pub background_repeat: BackgroundRepeat,
+    /// Where the image goes. A percentage aligns that point of the image with that point of
+    /// the box.
+    pub background_position_x: Size,
+    pub background_position_y: Size,
     pub margin: Sides<Size>,
     pub padding: Sides<Size>,
     /// Zero where the border style is `none` or `hidden`.
@@ -133,6 +138,9 @@ impl ComputedStyle {
             text_decoration: 0,
             background_color: Color::TRANSPARENT,
             background_image: None,
+            background_repeat: BackgroundRepeat::Repeat,
+            background_position_x: Size::Percent(0.0),
+            background_position_y: Size::Percent(0.0),
             margin: Sides::all(Size::Px(0.0)),
             padding: Sides::all(Size::Px(0.0)),
             border_width: Sides::all(3.0),
@@ -401,6 +409,9 @@ fn apply(
             V::Url(url) => style.background_image = Some(url.clone()),
             _ => {}
         },
+        P::BackgroundRepeat => set!(background_repeat, V::BackgroundRepeat(repeat) => *repeat),
+        P::BackgroundPositionX => size!(background_position_x),
+        P::BackgroundPositionY => size!(background_position_y),
         P::FontFamily => set!(font_family, V::Family(family) => family.clone()),
         P::FontStyle => set!(font_style, V::FontStyle(font_style) => *font_style),
         P::FontWeight => match value {

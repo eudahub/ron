@@ -18,8 +18,8 @@ mod css_parser;
 pub use cascade::{Styles, compute_styles, document_stylesheets};
 pub use media::Viewport;
 pub use properties::{
-    BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle, LINE_THROUGH,
-    ListStyleType, OVERLINE, Overflow, Position, TextAlign, TextTransform, UNDERLINE,
+    BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, Float, FontStyle,
+    LINE_THROUGH, ListStyleType, OVERLINE, Overflow, Position, TextAlign, TextTransform, UNDERLINE,
     VerticalAlign, Visibility, WhiteSpace,
 };
 pub use selector::{

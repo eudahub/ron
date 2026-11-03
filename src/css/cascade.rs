@@ -617,6 +617,18 @@ fn presentational_hints(document: &Document, id: NodeId) -> Vec<Compiled> {
                     hints.push(hint(Prop::BorderSpacing, size));
                 }
             }
+            ("clear", Tag::Br) => {
+                use super::properties::Clear;
+                let clear = match value.to_ascii_lowercase().as_str() {
+                    "left" => Some(Clear::Left),
+                    "right" => Some(Clear::Right),
+                    "all" | "both" => Some(Clear::Both),
+                    _ => None,
+                };
+                if let Some(clear) = clear {
+                    hints.push(hint(Prop::Clear, Value::Clear(clear)));
+                }
+            }
             ("type", Tag::Ul | Tag::Ol | Tag::Li) => {
                 if let Some(kind) = list_type_attribute(raw) {
                     hints.push(hint(Prop::ListStyleType, Value::ListStyleType(kind)));
