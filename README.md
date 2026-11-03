@@ -23,6 +23,7 @@ converting legacy encodings is up to the calling program.
 cargo build --release
 target/release/ron-dump page.html          # print tokens and attributes
 target/release/ron-dump --stats page.html  # token counts and tokenizing time
+cargo test
 ```
 
 `generated/html_parser.rs` is generated and checked in, so building needs only Cargo.
