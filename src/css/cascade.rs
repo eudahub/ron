@@ -354,7 +354,20 @@ pub struct Styles {
     /// The `@media` conditions around rules that can match something in the document, which is
     /// few of those in large style sheets. Only known once the whole document has been gone over.
     conditions: Option<Vec<Box<str>>>,
+    matches: Option<Matches>,
 }
+
+/// Which rules each element matches, whether or not their conditions hold now. Elements mostly match
+/// the same as many others, so they share these lists.
+#[derive(Default)]
+struct Matches {
+    lists: Vec<Box<[(u32, u32)]>>,
+    /// The number of its list, for each node, with [`NOT_PLAIN`].
+    of_node: Vec<u32>,
+}
+
+/// Set for a tag with a `style` attribute or hints, which make it a style of its own.
+const NOT_PLAIN: u32 = 1 << 31;
 
 /// What it takes to work out one style again for a view of another size, without going through the
 /// rules again.
@@ -374,6 +387,7 @@ impl Styles {
             of_view: Vec::new(),
             too_many_of_view: false,
             conditions: None,
+            matches: None,
         }
     }
 
@@ -388,6 +402,7 @@ impl Styles {
             of_view: Vec::new(),
             too_many_of_view: false,
             conditions: None,
+            matches: None,
         }
     }
 
@@ -458,6 +473,21 @@ impl Styles {
     pub fn capacity_bytes(&self) -> usize {
         self.styles.capacity() * size_of::<ComputedStyle>()
             + self.of_node.capacity() * size_of::<u32>()
+            + self.matches_bytes()
+    }
+
+    /// Bytes allocated for what [`restyle`] goes by.
+    #[must_use]
+    pub fn matches_bytes(&self) -> usize {
+        self.matches.as_ref().map_or(0, |matches| {
+            matches.of_node.capacity() * size_of::<u32>()
+                + matches.lists.capacity() * size_of::<Box<[(u32, u32)]>>()
+                + matches
+                    .lists
+                    .iter()
+                    .map(|list| size_of_val(&**list))
+                    .sum::<usize>()
+        })
     }
 
     /// Whether a limit stopped the cascade from finishing its work for every element.
@@ -556,11 +586,43 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
         viewport,
         document.descendants(document.root()).skip(1),
         true,
+        None,
         &mut progress,
     );
     let mut styles = progress.styles;
     styles.styles.shrink_to_fit();
     styles
+}
+
+/// Works out styles again for a view of another size, with the same sheets as before in the same
+/// order. Which elements a rule matches does not depend on the view, so what [`compute_styles`] found
+/// out about that stays, and this takes a fraction of the time.
+pub fn restyle<Sheet: Borrow<Stylesheet>>(
+    document: &Document,
+    authors: &[Sheet],
+    viewport: Viewport,
+    styles: &mut Styles,
+) {
+    let old = std::mem::replace(styles, Styles::empty());
+    let Some(matches) = old.matches else {
+        *styles = compute_styles(document, authors, viewport);
+        return;
+    };
+    let mut progress = StyleProgress::new();
+    cascade(
+        document,
+        authors,
+        viewport,
+        document.descendants(document.root()).skip(1),
+        true,
+        Some(&matches),
+        &mut progress,
+    );
+    *styles = progress.styles;
+    styles.styles.shrink_to_fit();
+    styles.limited |= old.limited;
+    styles.conditions = old.conditions;
+    styles.matches = Some(matches);
 }
 
 /// How far styles have been computed for a document that is still arriving.
@@ -629,6 +691,7 @@ pub fn extend_styles<Sheet: Borrow<Stylesheet>>(
         viewport,
         document.nodes_from(first),
         false,
+        None,
         progress,
     );
     progress.done = document.node_count();
@@ -640,6 +703,7 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     viewport: Viewport,
     nodes: impl Iterator<Item = NodeId>,
     whole_document: bool,
+    known_matches: Option<&Matches>,
     progress: &mut StyleProgress,
 ) {
     let quirks = document.is_quirks();
@@ -658,7 +722,9 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     let mut variable_rules: HashMap<u32, VariableRule<'_>> = HashMap::new();
     let mut custom_budget = std::mem::replace(&mut progress.custom_budget, 0);
     // Only a whole document tells which names it does not use.
-    let names = if whole_document {
+    let names = if known_matches.is_some() {
+        ElementNames::default()
+    } else if whole_document {
         ElementNames::of_document(document)
     } else {
         std::mem::take(&mut progress.names)
@@ -671,6 +737,9 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
             let number = u32::try_from(rules.len()).unwrap_or(u32::MAX);
             rules.push((ORIGIN_DEFAULT, declarations));
+            if known_matches.is_some() {
+                continue;
+            }
             for selector in &rule.selectors {
                 add_selector(
                     &mut index,
@@ -687,28 +756,30 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
     if quirks {
         add_sheet(&QUIRKS_SHEET, &QUIRKS_RULES);
     }
-    let mut conditions_that_count: HashSet<&str> = HashSet::new();
+    // For the whole document, all rules get a number and get matched, also those whose conditions do
+    // not hold now, so that this stays right for a view of another size.
+    let mut holding: Vec<bool> = vec![true; rules.len()];
+    let mut conditions_of_rules: HashMap<u32, (&Stylesheet, u32)> = HashMap::new();
     for (sheet, compiled) in authors.iter().zip(&compiled_authors) {
         let sheet = sheet.borrow();
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
-            if let Some(media) = rule.media
-                && whole_document
-                && rule.selectors.iter().any(|selector| {
-                    selector.pseudo_element.is_none() && !cannot_match(words, selector, quirks)
-                })
-            {
-                conditions_that_count.extend(sheet.media_chain(media));
-            }
-            if rule
+            let holds = rule
                 .media
-                .is_some_and(|media| !sheet.media_applies(media, viewport))
-            {
+                .is_none_or(|media| sheet.media_applies(media, viewport));
+            if !holds && !whole_document {
                 continue;
             }
             let number = u32::try_from(rules.len()).unwrap_or(u32::MAX);
             rules.push((ORIGIN_AUTHOR, declarations));
+            holding.push(holds);
             if let Some(variable_rule) = variable_rule(sheet, rule) {
                 variable_rules.insert(number, variable_rule);
+            }
+            if known_matches.is_some() {
+                continue;
+            }
+            if let (Some(media), true) = (rule.media, whole_document) {
+                conditions_of_rules.insert(number, (sheet, media));
             }
             for selector in &rule.selectors {
                 add_selector(
@@ -722,6 +793,11 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
             }
         }
     }
+    let mut new_matches = Matches::default();
+    if whole_document && known_matches.is_none() {
+        new_matches.of_node.resize(document.node_count(), 0);
+    }
+    let mut list_numbers: HashMap<Vec<(u32, u32)>, u32> = HashMap::new();
 
     let uses_positions = index.uses_positions || neighbour_index.uses_positions;
     let mut context = MatchContext::with_names(document, uses_positions, names);
@@ -750,45 +826,67 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
             continue;
         }
         let source = document.text(id);
-        let (signature, plain) = *known_sources
-            .entry((document.tag(id) as u8, source))
-            .or_insert_with(|| {
-                signature_text.clear();
-                write_signature(document, id, &index.seen, quirks, &mut signature_text);
-                let next = u32::try_from(signatures.len()).unwrap_or(u32::MAX);
-                let signature = match signatures.get(signature_text.as_str()) {
-                    Some(&known) => known,
+        let plain;
+        if let Some(known) = known_matches {
+            let entry = known.of_node[id.index()];
+            plain = entry & NOT_PLAIN == 0;
+            matched.clear();
+            matched.extend_from_slice(&known.lists[(entry & !NOT_PLAIN) as usize]);
+        } else {
+            let (signature, is_plain) = *known_sources
+                .entry((document.tag(id) as u8, source))
+                .or_insert_with(|| {
+                    signature_text.clear();
+                    write_signature(document, id, &index.seen, quirks, &mut signature_text);
+                    let next = u32::try_from(signatures.len()).unwrap_or(u32::MAX);
+                    let signature = match signatures.get(signature_text.as_str()) {
+                        Some(&known) => known,
+                        None => {
+                            signatures.insert(signature_text.clone(), next);
+                            next
+                        }
+                    };
+                    let has_style_attribute = document.attributes(id).any(|attribute| {
+                        attribute.name.eq_ignore_ascii_case("style") && attribute.value.is_some()
+                    });
+                    (
+                        signature,
+                        !has_style_attribute && presentational_hints(document, id).is_empty(),
+                    )
+                });
+            let next_context = u32::try_from(known_tags.len() + 1).unwrap_or(u32::MAX);
+            let known = known_tags
+                .entry((contexts[parent.index()], signature))
+                .or_insert_with(|| {
+                    let mut matched = Vec::new();
+                    collect_matches(document, id, &index, &mut context, &mut matched);
+                    KnownTag {
+                        context: next_context,
+                        matched,
+                    }
+                });
+            contexts[id.index()] = known.context;
+            matched.clear();
+            matched.extend_from_slice(&known.matched);
+            collect_matches(document, id, &neighbour_index, &mut context, &mut matched);
+            // Sort by specificity, then by source order, so that later entries win.
+            matched.sort_unstable();
+            matched.dedup();
+            plain = is_plain;
+            if whole_document {
+                let number = match list_numbers.get(matched.as_slice()) {
+                    Some(&number) => number,
                     None => {
-                        signatures.insert(signature_text.clone(), next);
-                        next
+                        let number = u32::try_from(new_matches.lists.len()).unwrap_or(u32::MAX);
+                        new_matches.lists.push(matched.as_slice().into());
+                        list_numbers.insert(matched.clone(), number);
+                        number
                     }
                 };
-                let has_style_attribute = document.attributes(id).any(|attribute| {
-                    attribute.name.eq_ignore_ascii_case("style") && attribute.value.is_some()
-                });
-                (
-                    signature,
-                    !has_style_attribute && presentational_hints(document, id).is_empty(),
-                )
-            });
-        let next_context = u32::try_from(known_tags.len() + 1).unwrap_or(u32::MAX);
-        let known = known_tags
-            .entry((contexts[parent.index()], signature))
-            .or_insert_with(|| {
-                let mut matched = Vec::new();
-                collect_matches(document, id, &index, &mut context, &mut matched);
-                KnownTag {
-                    context: next_context,
-                    matched,
-                }
-            });
-        contexts[id.index()] = known.context;
-        matched.clear();
-        matched.extend_from_slice(&known.matched);
-        collect_matches(document, id, &neighbour_index, &mut context, &mut matched);
-        // Sort by specificity, then by source order, so that later entries win.
-        matched.sort_unstable();
-        matched.dedup();
+                new_matches.of_node[id.index()] = number | if plain { 0 } else { NOT_PLAIN };
+            }
+        }
+        matched.retain(|&(_, rule)| holding[rule as usize]);
         // What the source of the tag holds decides the hints and the style attribute.
         let tag_text = if plain { "" } else { source };
         let key = (
@@ -939,8 +1037,19 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
         result.of_node[id.index()] = number;
     }
     result.limited |= context.is_limited();
-    if whole_document {
-        result.conditions = Some(conditions_that_count.into_iter().map(Box::from).collect());
+    if whole_document && known_matches.is_none() {
+        // Only rules that match something make a difference when their conditions change.
+        let mut conditions: HashSet<&str> = HashSet::new();
+        for list in &new_matches.lists {
+            for (_, rule) in list {
+                if let Some((sheet, media)) = conditions_of_rules.get(rule) {
+                    conditions.extend(sheet.media_chain(*media));
+                }
+            }
+        }
+        result.conditions = Some(conditions.into_iter().map(Box::from).collect());
+        new_matches.lists.shrink_to_fit();
+        result.matches = Some(new_matches);
     }
     progress.styles = result;
     progress.contexts = contexts;

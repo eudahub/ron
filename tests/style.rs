@@ -3,7 +3,7 @@
 use ron::css::{
     BackgroundRepeat, BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, LineHeight,
     ListStyleType, Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition,
-    Viewport, WhiteSpace, compute_styles, document_stylesheets, matches_media,
+    Viewport, WhiteSpace, compute_styles, document_stylesheets, matches_media, restyle,
 };
 use ron::html::{Document, NodeId, NodeKind, parse};
 
@@ -533,6 +533,145 @@ fn floats_and_roots_become_blocks() {
     );
     let root = Page::new("<!DOCTYPE html><html t=h style='display:inline'>");
     assert_eq!(root.style("h").display, Display::Block);
+}
+
+#[test]
+fn properties_by_the_direction_of_the_text_come_to_sides() {
+    let style = |css: &str| styled(css).style("a").clone();
+    let both = style("p { padding-inline: 10px; margin-block: 3px }");
+    assert_eq!(both.padding.left, Size::Px(10.0));
+    assert_eq!(both.padding.right, Size::Px(10.0));
+    assert_eq!(both.padding.top, Size::Px(0.0));
+    assert_eq!(both.margin.top, Size::Px(3.0));
+    assert_eq!(both.margin.bottom, Size::Px(3.0));
+    let each = style("p { padding-inline: 10px 20px; margin-inline: auto 5px }");
+    assert_eq!(each.padding.left, Size::Px(10.0));
+    assert_eq!(each.padding.right, Size::Px(20.0));
+    assert_eq!(each.margin.left, Size::Auto);
+    assert_eq!(each.margin.right, Size::Px(5.0));
+    let one = style(
+        "p { padding-inline-start: 1px; padding-inline-end: 2px; padding-block-start: 3px;
+         padding-block-end: 4px; margin-inline-start: 5px; margin-inline-end: 6px;
+         margin-block-start: 7px; margin-block-end: 8px }",
+    );
+    assert_eq!(one.padding.left, Size::Px(1.0));
+    assert_eq!(one.padding.right, Size::Px(2.0));
+    assert_eq!(one.padding.top, Size::Px(3.0));
+    assert_eq!(one.padding.bottom, Size::Px(4.0));
+    assert_eq!(one.margin.left, Size::Px(5.0));
+    assert_eq!(one.margin.right, Size::Px(6.0));
+    assert_eq!(one.margin.top, Size::Px(7.0));
+    assert_eq!(one.margin.bottom, Size::Px(8.0));
+    let places = style(
+        "p { inset-inline: 1px 2px; inset-block-start: 3px; inset-block-end: 4px;
+         inline-size: 5px; block-size: 6px; min-inline-size: 7px; max-block-size: 8px }",
+    );
+    assert_eq!(places.offsets.left, Size::Px(1.0));
+    assert_eq!(places.offsets.right, Size::Px(2.0));
+    assert_eq!(places.offsets.top, Size::Px(3.0));
+    assert_eq!(places.offsets.bottom, Size::Px(4.0));
+    assert_eq!(places.width, Size::Px(5.0));
+    assert_eq!(places.height, Size::Px(6.0));
+    assert_eq!(places.min_width, Size::Px(7.0));
+    assert_eq!(places.max_height, Size::Px(8.0));
+}
+
+#[test]
+fn borders_by_the_direction_of_the_text_come_to_sides() {
+    let style = |css: &str| styled(css).style("a").clone();
+    let end = style("p { border-block-end: 3px solid red }");
+    assert_eq!(end.border_width.bottom, 3.0);
+    assert_eq!(end.border_style.bottom, BorderStyle::Solid);
+    assert_eq!(end.border_color.bottom, RED);
+    assert_eq!(end.border_width.top, 0.0);
+    let inline = style("p { border-inline: 2px solid green }");
+    assert_eq!(inline.border_width.left, 2.0);
+    assert_eq!(inline.border_width.right, 2.0);
+    assert_eq!(inline.border_color.left, GREEN);
+    assert_eq!(inline.border_width.top, 0.0);
+    let parts = style(
+        "p { border-inline-style: solid; border-inline-width: 1px 4px; border-inline-color: blue }",
+    );
+    assert_eq!(parts.border_width.left, 1.0);
+    assert_eq!(parts.border_width.right, 4.0);
+    assert_eq!(parts.border_color.right, BLUE);
+    let one = style(
+        "p { border-block-start-style: solid; border-block-start-width: 5px;
+         border-block-start-color: red }",
+    );
+    assert_eq!(one.border_width.top, 5.0);
+    assert_eq!(one.border_color.top, RED);
+}
+
+#[test]
+fn the_last_of_a_side_wins_however_it_is_written() {
+    let style = |css: &str| styled(css).style("a").clone();
+    let logical_later = style("p { padding-left: 1px; padding-inline-start: 2px }");
+    assert_eq!(logical_later.padding.left, Size::Px(2.0));
+    let physical_later = style("p { padding-inline-start: 2px; padding-left: 1px }");
+    assert_eq!(physical_later.padding.left, Size::Px(1.0));
+}
+
+#[test]
+fn values_by_the_direction_of_the_text_can_be_wide_or_variables_or_wrong() {
+    let style = |css: &str| styled(css).style("a").clone();
+    let variable = style("p { --p: 9px; padding-inline: var(--p) }");
+    assert_eq!(variable.padding.left, Size::Px(9.0));
+    assert_eq!(variable.padding.right, Size::Px(9.0));
+    let inherited = style("div { padding-left: 4px } p { padding-inline: inherit }");
+    assert_eq!(inherited.padding.left, Size::Px(4.0));
+    let three = style("p { padding-inline: 1px 2px 3px }");
+    assert_eq!(three.padding.left, Size::Px(0.0));
+    let wrong = style("p { padding-left: 1px; padding-inline: red }");
+    assert_eq!(wrong.padding.left, Size::Px(1.0));
+}
+
+/// Styles worked out again must be just what a new start gives, for every element.
+fn assert_restyle_is_right(css: &str, widths: &[f32]) {
+    let source = format!(
+        "<!DOCTYPE html><style>{css}</style><div t=d id=i class=c style='margin-top:1px'>\
+         <p t=a id=j class=k>x<span class=s>y</span></p><p class=k>z</p></div><ul><li>a<li>b</ul>"
+    );
+    let document = parse(&source);
+    let view = |width: f32| Viewport {
+        width,
+        height: 700.0,
+    };
+    let sheets = document_stylesheets(&document, view(widths[0]));
+    let mut styles = compute_styles(&document, &sheets, view(widths[0]));
+    for &width in &widths[1..] {
+        restyle(&document, &sheets, view(width), &mut styles);
+        let fresh = compute_styles(&document, &sheets, view(width));
+        for id in document.descendants(document.root()).skip(1) {
+            assert_eq!(styles.get(id), fresh.get(id), "{css} at {width}");
+        }
+    }
+}
+
+#[test]
+fn styles_worked_out_again_are_those_of_a_new_start() {
+    let widths = [1000.0, 500.0, 1200.0, 800.0, 1000.0];
+    for css in [
+        "",
+        "p { color: red }",
+        "@media (width>=900px) { p { color: red } }",
+        "@media (width<=900px) { .k { color: red } #j { margin: 1px } }",
+        "@media (width>=600px) { @media (width<=900px) { p { color: red } } }",
+        "p { margin-left: 10vw } @media (width>=900px) { p { margin-left: 5vw } }",
+        "html { font-size: 2vw } p { margin-left: 1rem }",
+        "@media (width>=900px) { html { font-size: 20px } } p { margin-left: 1em }",
+        "@media (width>=900px) { :root { --c: red } } p { color: var(--c, blue) }",
+        "p { --w: 10vw; margin-left: var(--w) }",
+        "@media (width>=900px) { div { display: flex } } span { margin: 1px }",
+        "@media (width>=900px) { p + p { color: red } li:first-child { color: red } }",
+        "@media (width>=900px) { @layer a { p { color: red } } } p { color: blue }",
+        "@layer a { @media (width<=900px) { p { color: red } } } @layer b { .k { color: blue } }",
+        "@media (width>=900px) { p { color: red !important } } .k { color: blue }",
+        "@media (width>=900px) { .absent { color: red } } p { color: blue }",
+        "@media print { p { color: red } } p:hover { color: blue }",
+    ] {
+        assert_restyle_is_right(css, &widths);
+    }
 }
 
 #[test]

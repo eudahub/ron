@@ -20,7 +20,7 @@ mod css_parser;
 
 pub use cascade::{
     SheetSource, StyleProgress, Styles, compute_styles, document_sheet_sources,
-    document_stylesheets, extend_styles,
+    document_stylesheets, extend_styles, restyle,
 };
 pub use grid::{GridArea, GridAreas, GridLine, GridTrack, TrackSize};
 pub use math::{CalcRef, CalcSize, Linear};
