@@ -1,5 +1,6 @@
 //! Computed styles: the cascade's winners resolved against the parent's style.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use super::grid::{GridAreas, GridLine, GridTrack, parse_areas, parse_line, parse_tracks};
@@ -105,6 +106,9 @@ pub struct ComputedStyle {
     /// `UNDERLINE`, `OVERLINE` and `LINE_THROUGH` bits of this element alone; layout
     /// carries them down to its text.
     pub text_decoration: u8,
+    /// Whether a length of this element depends on the size of the view.
+    pub uses_view_width: bool,
+    pub uses_view_height: bool,
     pub background_color: Color,
     /// What a style sheet says of the inside of SVG shapes, transparent for `none`. Whatever is
     /// left to come from the parent or from the attributes of the SVG is for what draws it.
@@ -185,6 +189,8 @@ impl ComputedStyle {
             box_sizing: BoxSizing::ContentBox,
             vertical_align: VerticalPosition::Keyword(VerticalAlign::Baseline),
             text_decoration: 0,
+            uses_view_width: false,
+            uses_view_height: false,
             background_color: Color::TRANSPARENT,
             fill: None,
             background_image: None,
@@ -255,15 +261,22 @@ impl ComputedStyle {
 }
 
 /// What lengths are relative to while one element is resolved.
-struct Context {
+struct Context<'a> {
     font_size: f32,
     root_font_size: f32,
     viewport: Viewport,
+    /// Set when a length turns out to depend on the width and on the height of the view.
+    used_viewport: &'a Cell<(bool, bool)>,
 }
 
-impl Context {
+impl Context<'_> {
     fn pixels(&self, length: Length) -> Option<f32> {
         let value = length.value;
+        let (width, height) = self.used_viewport.get();
+        self.used_viewport.set((
+            width || matches!(length.unit, Unit::Vw | Unit::Vmin | Unit::Vmax),
+            height || matches!(length.unit, Unit::Vh | Unit::Vmin | Unit::Vmax),
+        ));
         Some(match length.unit {
             Unit::Px => value,
             Unit::Em => value * self.font_size,
@@ -302,6 +315,7 @@ pub(super) fn compute(
 ) -> ComputedStyle {
     let initial = ComputedStyle::initial();
     let mut style = ComputedStyle::inheriting(parent);
+    let used_viewport = Cell::new((false, false));
     let get = |prop: Prop| cascaded[prop as usize];
     let font_size = match get(Prop::FontSize) {
         None => inherited_font_size(parent, get(Prop::FontFamily)),
@@ -315,6 +329,7 @@ pub(super) fn compute(
                 font_size: parent.font_size,
                 root_font_size: root_font_size.unwrap_or(16.0),
                 viewport,
+                used_viewport: &used_viewport,
             };
             match length.unit {
                 Unit::Percent => parent.font_size * length.value / 100.0,
@@ -326,6 +341,7 @@ pub(super) fn compute(
                 font_size: parent.font_size,
                 root_font_size: root_font_size.unwrap_or(16.0),
                 viewport,
+                used_viewport: &used_viewport,
             };
             math.size(&|length| relative.pixels(length))
                 .map_or(parent.font_size, |size| size.of(parent.font_size).max(0.0))
@@ -337,6 +353,7 @@ pub(super) fn compute(
         font_size,
         root_font_size: root_font_size.unwrap_or(font_size),
         viewport,
+        used_viewport: &used_viewport,
     };
     // The color comes first, as other properties can refer to it.
     match get(Prop::Color) {
@@ -357,6 +374,7 @@ pub(super) fn compute(
             );
         }
     }
+    (style.uses_view_width, style.uses_view_height) = used_viewport.get();
     if style.float != Float::None || matches!(style.position, Position::Absolute | Position::Fixed)
     {
         style.display = blockified(style.display);

@@ -374,6 +374,15 @@ impl Styles {
         &self.styles[self.of_node[id.index()] as usize]
     }
 
+    /// Whether a change of the width or the height of the view would give other lengths, whatever
+    /// `@media` says.
+    #[must_use]
+    pub fn depend_on_view(&self, width: bool, height: bool) -> bool {
+        self.styles
+            .iter()
+            .any(|style| (width && style.uses_view_width) || (height && style.uses_view_height))
+    }
+
     /// How many distinct styles the document has.
     #[must_use]
     pub fn distinct_count(&self) -> usize {
