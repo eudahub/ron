@@ -3,8 +3,8 @@ Memory-safe web engine library in Rust. It takes UTF-8 text, never opens files o
 sockets itself, and has no GUI, so a browser and a crawler can share it. The browser
 built on it is a separate project, `ron-browser`.
 
-The current stage is parsing HTML and CSS and matching selectors; there is no cascade or
-rendering yet.
+The current stage is parsing HTML and CSS and computing the style of every element. Layout
+and rendering belong to the browser, which is a separate project.
 
 ## HTML parser
 
@@ -46,6 +46,20 @@ element against a selector. It handles type, class, id and attribute selectors, 
 combinators and the structural pseudo-classes, `:not()`, `:is()` and `:where()`. States of a
 live page, such as `:hover`, are valid but do not match yet, and `:has()` counts as invalid.
 
+## Computed styles
+
+`ron::css::compute_styles` gives every element its computed style: the default styles of the
+HTML standard, then old presentational attributes such as `bgcolor` and `<font size>`, then
+author rules and `style` attributes, with specificity, `!important`, inheritance and `@media`
+conditions. `document_stylesheets` collects a page's `<style>` elements; the caller fetches
+any others. Elements with equal styles share one.
+
+The properties cover display, floats, the box model, borders, backgrounds, fonts, text and
+lists. A value ron cannot read drops its declaration. That includes `var()` and `calc()`, on
+which modern pages rely, so such pages lose part of their styling for now. The styles of
+`::before` and `::after` are not computed. Selector matching has a step budget, so patterns
+such as `.a ~ b` on huge lists stop matching instead of taking hours; `is_limited` reports it.
+
 ## HTML tokenizer
 
 `ron::html::Tokenizer` splits a document into text, tags, comments, declarations and
@@ -74,6 +88,8 @@ target/release/ron-dump --chunk 1400 page.html  # the same through the stream to
 target/release/ron-dump --tree page.html   # the document tree
 target/release/ron-dump --memory page.html # memory and time while parsing as it is read
 target/release/ron-dump --css page.html    # how a stylesheet or a page's <style> parses
+target/release/ron-dump --style page.html  # time and memory of the computed styles
+target/release/ron-dump --computed page.html  # the style of each element
 cargo test
 RON_CORPUS_DIR=pages cargo test --release -- --ignored  # also real .html files from a directory
 RON_HTML5LIB_DIR=dat cargo test --release --test html5lib -- --ignored --nocapture

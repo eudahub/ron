@@ -13,6 +13,14 @@ const NONE: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NodeId(u32);
 
+impl NodeId {
+    /// The position in the document's node array, for tables indexed by node.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeKind {
     Document,

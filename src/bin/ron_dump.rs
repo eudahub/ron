@@ -1,6 +1,7 @@
 //! Inspects how a UTF-8 HTML file is parsed: its tokens, token statistics with `--stats`,
 //! the tree with `--tree`, the memory used to build it with `--memory`, or how the CSS
-//! of a stylesheet or of a page's `<style>` elements parses with `--css`.
+//! of a stylesheet or of a page's `<style>` elements parses with `--css`, the cost of its
+//! computed styles with `--style`, or those styles element by element with `--computed`.
 //! With `--chunk N` the file goes through the stream tokenizer or parser in pieces of N bytes.
 
 use std::collections::BTreeMap;
@@ -8,13 +9,13 @@ use std::io::Read;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ron::css::Stylesheet;
+use ron::css::{Stylesheet, Viewport, compute_styles, document_stylesheets};
 use ron::html::{
     Document, NodeKind, Parser, StreamTokenizer, Tag, Token, TokenKind, Tokenizer, attributes,
     parse, tag_name,
 };
 
-const USAGE: &str = "usage: ron-dump [--stats | --tree | --memory | --css] [--chunk BYTES] FILE";
+const USAGE: &str = "usage: ron-dump [--stats | --tree | --memory | --css | --style | --computed] [--chunk BYTES] FILE";
 
 /// Calls `visit` with consecutive pieces of at most `size` bytes, cut at character boundaries.
 fn for_each_piece(source: &str, size: usize, mut visit: impl FnMut(&str)) {
@@ -199,6 +200,60 @@ fn print_css(source: &str, path: &str) {
     println!("time {elapsed:?}");
 }
 
+fn print_style_cost(source: &str) {
+    let document = parse(source);
+    let viewport = Viewport::default();
+    let sheets = document_stylesheets(&document, viewport);
+    let started = Instant::now();
+    let styles = compute_styles(&document, &sheets, viewport);
+    let elapsed = started.elapsed();
+    let bytes = styles.capacity_bytes();
+    let dom = document.source_capacity_bytes() + document.nodes_capacity_bytes();
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = (dom + bytes) as f64 / document.source_capacity_bytes().max(1) as f64;
+    println!("nodes {}", document.node_count());
+    println!("distinct_styles {}", styles.distinct_count());
+    println!("style_bytes {bytes}");
+    println!("document_and_styles_to_source_ratio {ratio:.2}");
+    println!(
+        "process_kb_peak {}",
+        process_status_kb("VmHWM").unwrap_or(0)
+    );
+    println!("time {elapsed:?}");
+    if styles.is_limited() {
+        println!("limited");
+    }
+}
+
+fn print_computed(source: &str) {
+    let document = parse(source);
+    let viewport = Viewport::default();
+    let sheets = document_stylesheets(&document, viewport);
+    let styles = compute_styles(&document, &sheets, viewport);
+    let root = document.root();
+    for id in document.descendants(root) {
+        if document.kind(id) != NodeKind::Element {
+            continue;
+        }
+        let style = styles.get(id);
+        println!(
+            "<{}> {:?} color={:?} background={:?} image={:?} font={}px/{} align={:?} float={:?} width={:?} margin={:?} list={:?}",
+            document.name(id),
+            style.display,
+            style.color,
+            style.background_color,
+            style.background_image,
+            style.font_size,
+            style.font_weight,
+            style.text_align,
+            style.float,
+            style.width,
+            style.margin.top,
+            style.list_style_type,
+        );
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Output {
     Tokens,
@@ -206,6 +261,8 @@ enum Output {
     Tree,
     Memory,
     Css,
+    Style,
+    Computed,
 }
 
 fn main() -> ExitCode {
@@ -219,6 +276,8 @@ fn main() -> ExitCode {
             "--tree" => output = Output::Tree,
             "--memory" => output = Output::Memory,
             "--css" => output = Output::Css,
+            "--style" => output = Output::Style,
+            "--computed" => output = Output::Computed,
             "--chunk" => {
                 chunk = arguments.next().and_then(|size| size.parse().ok());
                 if chunk.is_none_or(|size: usize| size == 0) {
@@ -262,6 +321,8 @@ fn main() -> ExitCode {
         Output::Stats => print_stats(&source, chunk),
         Output::Tree => print_parsed_tree(&source, chunk),
         Output::Css => print_css(&source, &path),
+        Output::Style => print_style_cost(&source),
+        Output::Computed => print_computed(&source),
         Output::Memory => {}
     }
     ExitCode::SUCCESS

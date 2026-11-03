@@ -1,6 +1,7 @@
 //! Stylesheets, read as CSS Syntax requires: errors drop one rule or declaration, and
 //! the input ending inside a block closes it.
 
+use super::media::{Viewport, matches_media};
 use super::selector::Selector;
 use super::tokenizer::{CssToken, CssTokenKind as K, tokenize, unescape};
 
@@ -22,7 +23,7 @@ pub struct StyleRule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,
     /// Index into [`Stylesheet::media_queries`] of the `@media` condition around this
-    /// rule, for the innermost one when they nest.
+    /// rule, the innermost one when they nest.
     pub media: Option<u32>,
 }
 
@@ -33,6 +34,8 @@ pub struct Stylesheet {
     pub rules: Vec<StyleRule>,
     /// The conditions of `@media` rules, as written.
     pub media_queries: Vec<Box<str>>,
+    /// For each condition, the one around it when they nest.
+    media_parents: Vec<Option<u32>>,
     /// The targets of `@import` rules, which the caller may fetch.
     pub imports: Vec<Box<str>>,
 }
@@ -53,6 +56,45 @@ impl Stylesheet {
         stylesheet.read_rules(&tokens, source, None, 0, true);
         stylesheet.rules.shrink_to_fit();
         stylesheet
+    }
+
+    /// Parses the content of a `style` attribute, a list of declarations.
+    ///
+    /// # Panics
+    ///
+    /// Panics for sources of 4 GiB or more.
+    #[must_use]
+    pub fn parse_declarations(source: &str) -> Self {
+        let tokens = tokenize(source);
+        Self {
+            source: source.to_owned(),
+            rules: vec![StyleRule {
+                selectors: Vec::new(),
+                declarations: read_declarations(&tokens, source),
+                media: None,
+            }],
+            ..Self::default()
+        }
+    }
+
+    /// The declarations from [`Self::parse_declarations`].
+    #[must_use]
+    pub fn declarations(&self) -> &[Declaration] {
+        self.rules.first().map_or(&[], |rule| &rule.declarations)
+    }
+
+    /// Whether a condition and all those around it hold for this viewport.
+    #[must_use]
+    pub fn media_applies(&self, media: u32, viewport: Viewport) -> bool {
+        let mut current = Some(media);
+        while let Some(index) = current {
+            let index = index as usize;
+            if !matches_media(&self.media_queries[index], viewport) {
+                return false;
+            }
+            current = self.media_parents[index];
+        }
+        true
     }
 
     /// The value of a declaration as written, without `!important`.
@@ -102,6 +144,7 @@ impl Stylesheet {
             let condition = source_of(prelude, source).trim().into();
             let index = u32::try_from(self.media_queries.len()).unwrap_or(u32::MAX);
             self.media_queries.push(condition);
+            self.media_parents.push(media);
             let inner = &tokens[block + 1..end.min(tokens.len())];
             self.read_rules(inner, source, Some(index), depth + 1, false);
         } else if keyword == "supports" && depth < MAX_AT_RULE_NESTING {

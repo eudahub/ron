@@ -1,5 +1,6 @@
 //! Selectors: validated by the LALR(1) grammar, compiled from tokens, matched against a tree.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::html::{Document, NodeId, NodeKind, Tag};
@@ -12,6 +13,9 @@ use super::tokenizer::{CssToken, CssTokenKind as K, unescape};
 const MAX_COMPOUNDS: usize = 32;
 /// Deeper `:not()` and `:is()` nesting is invalid, which bounds compiling and matching.
 const MAX_NESTING: usize = 4;
+/// Selector checks allowed per document. Patterns like `.a ~ b` on a list of a million
+/// siblings would otherwise take hours; past this, selectors simply do not match.
+const MAX_MATCH_STEPS: u64 = 100_000_000;
 
 static PARSER: LazyLock<Option<Parser<'static>>> =
     LazyLock::new(|| Parser::new(&PARSER_TABLES, RuntimeLimits::default()).ok());
@@ -38,7 +42,7 @@ pub enum AttributeOperator {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeSelector {
     tag: Tag,
-    name: Box<str>,
+    pub(super) name: Box<str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -453,58 +457,246 @@ enum Failure {
 /// Whether `element` is what the selector's rightmost compound styles.
 #[must_use]
 pub fn matches(document: &Document, element: NodeId, selector: &Selector) -> bool {
-    match_from(document, element, &selector.compounds).is_ok()
+    MatchContext::new(document, false).matches(element, selector)
 }
 
-fn match_from(document: &Document, element: NodeId, compounds: &[Compound]) -> Result<(), Failure> {
-    let Some((compound, rest)) = compounds.split_first() else {
-        return Ok(());
-    };
-    if !compound
-        .simple
-        .iter()
-        .all(|simple| match_simple(document, element, simple))
-    {
-        return Err(Failure::TrySibling);
+/// Positions among siblings: from the start, from the end, and the same two among
+/// siblings of one type, all counting from 1.
+type Position = [u32; 4];
+
+/// State kept while matching many elements against many selectors.
+pub(super) struct MatchContext<'a> {
+    document: &'a Document,
+    positions: Vec<Position>,
+    steps: u64,
+    limited: bool,
+}
+
+impl<'a> MatchContext<'a> {
+    pub(super) fn new(document: &'a Document, with_positions: bool) -> Self {
+        Self {
+            document,
+            positions: if with_positions {
+                sibling_positions(document)
+            } else {
+                Vec::new()
+            },
+            steps: 0,
+            limited: false,
+        }
     }
-    let Some(combinator) = compound.combinator else {
-        return Ok(());
-    };
-    match combinator {
-        Combinator::Child | Combinator::Descendant => {
-            let mut candidate = element_parent(document, element);
-            while let Some(parent) = candidate {
-                match match_from(document, parent, rest) {
-                    Ok(()) => return Ok(()),
-                    Err(Failure::Final) => return Err(Failure::Final),
-                    Err(failure) => {
-                        if combinator == Combinator::Child {
-                            return Err(if failure == Failure::TrySibling {
-                                Failure::TryAncestor
-                            } else {
-                                failure
-                            });
+
+    pub(super) fn matches(&mut self, element: NodeId, selector: &Selector) -> bool {
+        self.match_from(element, &selector.compounds).is_ok()
+    }
+
+    /// Whether the step budget ran out, so that some selectors counted as not matching.
+    pub(super) fn is_limited(&self) -> bool {
+        self.limited
+    }
+
+    fn take_step(&mut self) -> Result<(), Failure> {
+        self.steps += 1;
+        if self.steps > MAX_MATCH_STEPS {
+            self.limited = true;
+            return Err(Failure::Final);
+        }
+        Ok(())
+    }
+
+    fn match_from(&mut self, element: NodeId, compounds: &[Compound]) -> Result<(), Failure> {
+        let Some((compound, rest)) = compounds.split_first() else {
+            return Ok(());
+        };
+        self.take_step()?;
+        for simple in &compound.simple {
+            if !self.match_simple(element, simple) {
+                return Err(Failure::TrySibling);
+            }
+        }
+        let Some(combinator) = compound.combinator else {
+            return Ok(());
+        };
+        let document = self.document;
+        match combinator {
+            Combinator::Child | Combinator::Descendant => {
+                let mut candidate = element_parent(document, element);
+                while let Some(parent) = candidate {
+                    self.take_step()?;
+                    match self.match_from(parent, rest) {
+                        Ok(()) => return Ok(()),
+                        Err(Failure::Final) => return Err(Failure::Final),
+                        Err(failure) => {
+                            if combinator == Combinator::Child {
+                                return Err(if failure == Failure::TrySibling {
+                                    Failure::TryAncestor
+                                } else {
+                                    failure
+                                });
+                            }
                         }
                     }
+                    candidate = element_parent(document, parent);
                 }
-                candidate = element_parent(document, parent);
+                Err(Failure::Final)
             }
-            Err(Failure::Final)
-        }
-        Combinator::NextSibling | Combinator::SubsequentSibling => {
-            let mut candidate = previous_element(document, element);
-            while let Some(sibling) = candidate {
-                match match_from(document, sibling, rest) {
-                    Ok(()) => return Ok(()),
-                    Err(Failure::TrySibling) if combinator == Combinator::SubsequentSibling => {}
-                    Err(Failure::TrySibling) => return Err(Failure::TryAncestor),
-                    Err(failure) => return Err(failure),
+            Combinator::NextSibling | Combinator::SubsequentSibling => {
+                let mut candidate = previous_element(document, element);
+                while let Some(sibling) = candidate {
+                    self.take_step()?;
+                    match self.match_from(sibling, rest) {
+                        Ok(()) => return Ok(()),
+                        Err(Failure::TrySibling) if combinator == Combinator::SubsequentSibling => {
+                        }
+                        Err(Failure::TrySibling) => return Err(Failure::TryAncestor),
+                        Err(failure) => return Err(failure),
+                    }
+                    candidate = previous_element(document, sibling);
                 }
-                candidate = previous_element(document, sibling);
+                Err(Failure::TryAncestor)
             }
-            Err(Failure::TryAncestor)
         }
     }
+
+    fn match_simple(&mut self, element: NodeId, simple: &SimpleSelector) -> bool {
+        let document = self.document;
+        match simple {
+            SimpleSelector::Pseudo(pseudo) => self.match_pseudo(element, pseudo),
+            other => match_plain(document, element, other),
+        }
+    }
+
+    fn position(&self, element: NodeId) -> Option<Position> {
+        self.positions.get(element.index()).copied()
+    }
+
+    fn match_pseudo(&mut self, element: NodeId, pseudo: &PseudoClass) -> bool {
+        let document = self.document;
+        let no_previous = || previous_element(document, element).is_none();
+        let no_next = || next_element(document, element).is_none();
+        let position = self.position(element);
+        let no_same_type = |walk: fn(&Document, NodeId) -> Option<NodeId>, slot: usize| {
+            if let Some(position) = position {
+                return position[slot] == 1;
+            }
+            std::iter::successors(walk(document, element), |&node| walk(document, node))
+                .all(|node| !same_type(document, element, node))
+        };
+        match pseudo {
+            PseudoClass::Root => document
+                .parent(element)
+                .is_some_and(|parent| document.kind(parent) == NodeKind::Document),
+            PseudoClass::Empty => {
+                document
+                    .children(element)
+                    .all(|child| match document.kind(child) {
+                        NodeKind::Element => false,
+                        NodeKind::Text => document.text(child).is_empty(),
+                        _ => true,
+                    })
+            }
+            PseudoClass::FirstChild => no_previous(),
+            PseudoClass::LastChild => no_next(),
+            PseudoClass::OnlyChild => no_previous() && no_next(),
+            PseudoClass::FirstOfType => no_same_type(previous_element, 2),
+            PseudoClass::LastOfType => no_same_type(next_element, 3),
+            PseudoClass::OnlyOfType => {
+                no_same_type(previous_element, 2) && no_same_type(next_element, 3)
+            }
+            PseudoClass::Nth {
+                a,
+                b,
+                from_end,
+                of_type,
+            } => {
+                let slot = usize::from(*from_end) + 2 * usize::from(*of_type);
+                let index = match position {
+                    Some(position) => i64::from(position[slot]),
+                    None => {
+                        let walk = if *from_end {
+                            next_element
+                        } else {
+                            previous_element
+                        };
+                        let before = std::iter::successors(walk(document, element), |&node| {
+                            walk(document, node)
+                        })
+                        .filter(|&node| !*of_type || same_type(document, element, node))
+                        .count();
+                        i64::try_from(before).unwrap_or(i64::MAX - 1) + 1
+                    }
+                };
+                let (a, b) = (i64::from(*a), i64::from(*b));
+                if a == 0 {
+                    index == b
+                } else {
+                    (index - b) % a == 0 && (index - b) / a >= 0
+                }
+            }
+            PseudoClass::AnyLink => {
+                matches!(document.tag(element), Tag::A | Tag::Area)
+                    && has_attribute(document, element, "href")
+            }
+            PseudoClass::Checked => {
+                has_attribute(document, element, "checked")
+                    || has_attribute(document, element, "selected")
+            }
+            PseudoClass::Disabled => {
+                is_form_control(document.tag(element))
+                    && has_attribute(document, element, "disabled")
+            }
+            PseudoClass::Enabled => {
+                is_form_control(document.tag(element))
+                    && !has_attribute(document, element, "disabled")
+            }
+            PseudoClass::Dynamic => false,
+            PseudoClass::Not(list) => !list.iter().any(|selector| self.matches(element, selector)),
+            PseudoClass::Is(list) => list.iter().any(|selector| self.matches(element, selector)),
+        }
+    }
+}
+
+/// Counts the positions of all elements in one pass over the tree, which is what keeps
+/// `:nth-child()` on a long list from walking its siblings for each item.
+fn sibling_positions(document: &Document) -> Vec<Position> {
+    let mut positions = vec![[0; 4]; document.node_count()];
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for parent in document.descendants(document.root()) {
+        if document.first_child(parent).is_none() {
+            continue;
+        }
+        counts.clear();
+        let mut index = 0;
+        for child in document.children(parent) {
+            if document.kind(child) == NodeKind::Element {
+                index += 1;
+                let count = counts
+                    .entry(document.local_name(child).into_owned())
+                    .or_insert(0);
+                *count += 1;
+                positions[child.index()][0] = index;
+                positions[child.index()][2] = *count;
+            }
+        }
+        counts.clear();
+        // Children go backwards through a second list, as the links only help one way
+        // from the first child.
+        let mut last = document.last_child(parent);
+        let mut index = 0;
+        while let Some(child) = last {
+            if document.kind(child) == NodeKind::Element {
+                index += 1;
+                let count = counts
+                    .entry(document.local_name(child).into_owned())
+                    .or_insert(0);
+                *count += 1;
+                positions[child.index()][1] = index;
+                positions[child.index()][3] = *count;
+            }
+            last = document.previous_sibling(child);
+        }
+    }
+    positions
 }
 
 fn element_parent(document: &Document, element: NodeId) -> Option<NodeId> {
@@ -547,7 +739,7 @@ fn same_type(document: &Document, element: NodeId, other: NodeId) -> bool {
             .eq_ignore_ascii_case(document.name(other))
 }
 
-fn match_simple(document: &Document, element: NodeId, simple: &SimpleSelector) -> bool {
+fn match_plain(document: &Document, element: NodeId, simple: &SimpleSelector) -> bool {
     match simple {
         SimpleSelector::Universal => true,
         SimpleSelector::Type(selector) => {
@@ -583,7 +775,7 @@ fn match_simple(document: &Document, element: NodeId, simple: &SimpleSelector) -
             ignore_case,
         } => attribute(document, element, name)
             .is_some_and(|actual| match_attribute(&actual, *operator, value, *ignore_case)),
-        SimpleSelector::Pseudo(pseudo) => match_pseudo(document, element, pseudo),
+        SimpleSelector::Pseudo(_) => false,
     }
 }
 
@@ -616,77 +808,6 @@ fn match_attribute(
         AttributeOperator::Prefix => !wanted.is_empty() && actual.starts_with(&wanted),
         AttributeOperator::Suffix => !wanted.is_empty() && actual.ends_with(&wanted),
         AttributeOperator::Substring => !wanted.is_empty() && actual.contains(&wanted),
-    }
-}
-
-fn match_pseudo(document: &Document, element: NodeId, pseudo: &PseudoClass) -> bool {
-    let no_previous = || previous_element(document, element).is_none();
-    let no_next = || next_element(document, element).is_none();
-    let no_same_type = |walk: fn(&Document, NodeId) -> Option<NodeId>| {
-        std::iter::successors(walk(document, element), |&node| walk(document, node))
-            .all(|node| !same_type(document, element, node))
-    };
-    match pseudo {
-        PseudoClass::Root => document
-            .parent(element)
-            .is_some_and(|parent| document.kind(parent) == NodeKind::Document),
-        PseudoClass::Empty => document
-            .children(element)
-            .all(|child| match document.kind(child) {
-                NodeKind::Element => false,
-                NodeKind::Text => document.text(child).is_empty(),
-                _ => true,
-            }),
-        PseudoClass::FirstChild => no_previous(),
-        PseudoClass::LastChild => no_next(),
-        PseudoClass::OnlyChild => no_previous() && no_next(),
-        PseudoClass::FirstOfType => no_same_type(previous_element),
-        PseudoClass::LastOfType => no_same_type(next_element),
-        PseudoClass::OnlyOfType => no_same_type(previous_element) && no_same_type(next_element),
-        PseudoClass::Nth {
-            a,
-            b,
-            from_end,
-            of_type,
-        } => {
-            let walk = if *from_end {
-                next_element
-            } else {
-                previous_element
-            };
-            let before =
-                std::iter::successors(walk(document, element), |&node| walk(document, node))
-                    .filter(|&node| !*of_type || same_type(document, element, node))
-                    .count();
-            let position = i64::try_from(before).unwrap_or(i64::MAX - 1) + 1;
-            let (a, b) = (i64::from(*a), i64::from(*b));
-            if a == 0 {
-                position == b
-            } else {
-                (position - b) % a == 0 && (position - b) / a >= 0
-            }
-        }
-        PseudoClass::AnyLink => {
-            matches!(document.tag(element), Tag::A | Tag::Area)
-                && has_attribute(document, element, "href")
-        }
-        PseudoClass::Checked => {
-            has_attribute(document, element, "checked")
-                || has_attribute(document, element, "selected")
-        }
-        PseudoClass::Disabled => {
-            is_form_control(document.tag(element)) && has_attribute(document, element, "disabled")
-        }
-        PseudoClass::Enabled => {
-            is_form_control(document.tag(element)) && !has_attribute(document, element, "disabled")
-        }
-        PseudoClass::Dynamic => false,
-        PseudoClass::Not(list) => !list
-            .iter()
-            .any(|selector| matches(document, element, selector)),
-        PseudoClass::Is(list) => list
-            .iter()
-            .any(|selector| matches(document, element, selector)),
     }
 }
 
