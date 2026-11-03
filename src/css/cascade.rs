@@ -801,9 +801,9 @@ fn cascade<Sheet: Borrow<Stylesheet>>(
             root_font_size = Some(style.font_size);
         } else if matches!(
             result.styles[parent_style as usize].display,
-            Display::Flex | Display::InlineFlex
+            Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
         ) {
-            // What stands directly in a flexible box is a box of its own.
+            // What stands directly in a flexible box or a grid is a box of its own.
             style.display = blockified(style.display);
         }
         // Different tags often come to the same style, such as images with other sources.

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::grid::{GridAreas, GridLine, GridTrack, parse_areas, parse_line, parse_tracks};
 use super::media::Viewport;
 use super::properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
@@ -119,6 +120,16 @@ pub struct ComputedStyle {
     pub row_gap: f32,
     pub column_gap: f32,
     pub z_index: Option<i32>,
+    pub grid_template_columns: Option<Arc<[GridTrack]>>,
+    pub grid_template_rows: Option<Arc<[GridTrack]>>,
+    pub grid_auto_rows: Option<Arc<[GridTrack]>>,
+    pub grid_template_areas: Option<Arc<GridAreas>>,
+    pub grid_column_start: GridLine,
+    pub grid_column_end: GridLine,
+    pub grid_row_start: GridLine,
+    pub grid_row_end: GridLine,
+    pub justify_items: FlexAlign,
+    pub justify_self: FlexAlign,
 }
 
 impl ComputedStyle {
@@ -180,6 +191,16 @@ impl ComputedStyle {
             row_gap: 0.0,
             column_gap: 0.0,
             z_index: None,
+            grid_template_columns: None,
+            grid_template_rows: None,
+            grid_auto_rows: None,
+            grid_template_areas: None,
+            grid_column_start: GridLine::Auto,
+            grid_column_end: GridLine::Auto,
+            grid_row_start: GridLine::Auto,
+            grid_row_end: GridLine::Auto,
+            justify_items: FlexAlign::Normal,
+            justify_self: FlexAlign::Auto,
         }
     }
 
@@ -349,6 +370,14 @@ pub(super) fn blockified(display: Display) -> Display {
         Display::InlineGrid => Display::Grid,
         other => other,
     }
+}
+
+fn tracks_of(text: &str, context: &Context) -> Option<Arc<[GridTrack]>> {
+    parse_tracks(text, &|length| context.pixels(length)).map(Arc::from)
+}
+
+fn line_of(text: &str) -> GridLine {
+    parse_line(text).unwrap_or(GridLine::Auto)
 }
 
 fn apply(
@@ -551,6 +580,27 @@ fn apply(
         P::Order => set!(order, V::Number(order) => *order as i32),
         P::RowGap => width!(row_gap),
         P::ColumnGap => width!(column_gap),
+        P::GridTemplateColumns => {
+            set!(grid_template_columns, V::GridText(text) => tracks_of(text, context));
+        }
+        P::GridTemplateRows => {
+            set!(grid_template_rows, V::GridText(text) => tracks_of(text, context))
+        }
+        P::GridAutoRows => set!(grid_auto_rows, V::GridText(text) => tracks_of(text, context)),
+        P::GridTemplateAreas => match value {
+            V::Inherit => style
+                .grid_template_areas
+                .clone_from(&parent.grid_template_areas),
+            V::Initial | V::Empty => style.grid_template_areas = None,
+            V::GridText(text) => style.grid_template_areas = parse_areas(text).map(Arc::new),
+            _ => {}
+        },
+        P::GridColumnStart => set!(grid_column_start, V::GridText(text) => line_of(text)),
+        P::GridColumnEnd => set!(grid_column_end, V::GridText(text) => line_of(text)),
+        P::GridRowStart => set!(grid_row_start, V::GridText(text) => line_of(text)),
+        P::GridRowEnd => set!(grid_row_end, V::GridText(text) => line_of(text)),
+        P::JustifyItems => set!(justify_items, V::FlexAlign(align) => *align),
+        P::JustifySelf => set!(justify_self, V::FlexAlign(align) => *align),
         P::ZIndex => match value {
             V::Inherit => style.z_index = parent.z_index,
             V::Initial | V::Empty => style.z_index = None,

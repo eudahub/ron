@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use super::grid::{GridLine, parse_areas, parse_line, parse_tracks};
 use super::values::{Color, Length, Unit, parse_color, parse_length, parse_url, split_words};
 
 macro_rules! keywords {
@@ -136,6 +137,11 @@ properties! {
     AlignItems "align-items" AlignSelf "align-self" FlexGrow "flex-grow"
     FlexShrink "flex-shrink" FlexBasis "flex-basis" Order "order"
     RowGap "row-gap" ColumnGap "column-gap" ZIndex "z-index"
+    GridTemplateColumns "grid-template-columns" GridTemplateRows "grid-template-rows"
+    GridAutoRows "grid-auto-rows" GridTemplateAreas "grid-template-areas"
+    GridColumnStart "grid-column-start" GridColumnEnd "grid-column-end"
+    GridRowStart "grid-row-start" GridRowEnd "grid-row-end"
+    JustifyItems "justify-items" JustifySelf "justify-self"
 }
 
 /// `text-decoration-line` bits.
@@ -177,6 +183,8 @@ pub(super) enum Value {
     FlexWrap(FlexWrap),
     JustifyContent(JustifyContent),
     FlexAlign(FlexAlign),
+    /// As written, which gets read when lengths in it can be resolved. It has been checked.
+    GridText(Arc<str>),
     /// `larger` or `smaller` when true or false.
     FontRelative(bool),
 }
@@ -311,6 +319,27 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
             .parse::<i32>()
             .ok()
             .map(|order| Value::Number(order as f32)),
+        P::GridTemplateColumns | P::GridTemplateRows | P::GridAutoRows => {
+            parse_tracks(text, &|_| Some(0.0)).map(|_| Value::GridText(text.into()))
+        }
+        P::GridTemplateAreas => {
+            if text.eq_ignore_ascii_case("none") {
+                Some(Value::Empty)
+            } else {
+                parse_areas(text).map(|_| Value::GridText(text.into()))
+            }
+        }
+        P::GridColumnStart | P::GridColumnEnd | P::GridRowStart | P::GridRowEnd => {
+            parse_line(text).map(|_| Value::GridText(text.into()))
+        }
+        P::JustifyItems | P::JustifySelf => {
+            let word = text.to_ascii_lowercase();
+            match word.as_str() {
+                "left" => Some(Value::FlexAlign(FlexAlign::Start)),
+                "right" => Some(Value::FlexAlign(FlexAlign::End)),
+                _ => FlexAlign::parse(text).map(Value::FlexAlign),
+            }
+        }
         P::ZIndex => empty("auto").or_else(|| {
             text.parse::<i32>()
                 .ok()
@@ -511,6 +540,16 @@ fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
         "flex" => &[P::FlexGrow, P::FlexShrink, P::FlexBasis],
         "flex-flow" => &[P::FlexDirection, P::FlexWrap],
         "gap" | "grid-gap" => &[P::RowGap, P::ColumnGap],
+        "grid-column" => &[P::GridColumnStart, P::GridColumnEnd],
+        "grid-row" => &[P::GridRowStart, P::GridRowEnd],
+        "grid-area" => &[
+            P::GridRowStart,
+            P::GridColumnStart,
+            P::GridRowEnd,
+            P::GridColumnEnd,
+        ],
+        "place-items" => &[P::AlignItems, P::JustifyItems],
+        "place-self" => &[P::AlignSelf, P::JustifySelf],
         _ => return None,
     })
 }
@@ -555,8 +594,60 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
         "flex" => expand_flex(text, push),
         "flex-flow" => expand_flex_flow(text, push),
         "gap" | "grid-gap" => expand_gap(text, push),
+        "grid-column" | "grid-row" | "grid-area" => expand_grid_lines(longhands, text, push),
+        "place-items" | "place-self" => expand_place(longhands, text, push),
         _ => false,
     }
+}
+
+/// Parts separated by slashes. What is left out is the same as a name in the part it goes with, and
+/// otherwise `auto`. `grid-area` lists a row, a column, then the ends of those.
+fn expand_grid_lines(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let parts: Vec<&str> = text.split('/').map(str::trim).collect();
+    if parts.len() > longhands.len() {
+        return false;
+    }
+    let mut values: Vec<&str> = Vec::with_capacity(longhands.len());
+    for (index, &prop) in longhands.iter().enumerate() {
+        let value = match parts.get(index) {
+            Some(part) => *part,
+            None => {
+                // In `grid-area` a column goes with the row, and each end with its start.
+                let goes_with = if index == 3 { 1 } else { 0 };
+                let earlier = values[goes_with];
+                if matches!(parse_line(earlier), Some(GridLine::Name(_))) {
+                    earlier
+                } else {
+                    "auto"
+                }
+            }
+        };
+        let Some(parsed) = parse_longhand(prop, value) else {
+            return false;
+        };
+        values.push(value);
+        push(prop, parsed);
+    }
+    true
+}
+
+/// An alignment across and one along, or one for both.
+fn expand_place(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let words = split_words(text);
+    let (first, second) = match words.as_slice() {
+        [both] => (*both, *both),
+        [first, second] => (*first, *second),
+        _ => return false,
+    };
+    let (Some(first), Some(second)) = (
+        parse_longhand(longhands[0], first),
+        parse_longhand(longhands[1], second),
+    ) else {
+        return false;
+    };
+    push(longhands[0], first);
+    push(longhands[1], second);
+    true
 }
 
 /// `flex` is `none`, `auto`, or up to two numbers and a size. A number alone means no size of its

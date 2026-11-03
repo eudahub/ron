@@ -1,6 +1,7 @@
 //! CSS: parsing, selector matching, the cascade and computed styles.
 
 mod cascade;
+mod grid;
 mod media;
 mod properties;
 mod selector;
@@ -20,6 +21,7 @@ pub use cascade::{
     SheetSource, StyleProgress, Styles, compute_styles, document_sheet_sources,
     document_stylesheets, extend_styles,
 };
+pub use grid::{GridArea, GridAreas, GridLine, GridTrack, TrackSize};
 pub use media::{Viewport, matches_media};
 pub use properties::{
     BackgroundRepeat, BorderCollapse, BorderStyle, BoxSizing, Clear, Display, FlexAlign,
