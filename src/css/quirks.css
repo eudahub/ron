@@ -1,0 +1,11 @@
+/* What the rendering section of the HTML standard adds for documents in quirks mode. The rule
+   on margins stands in for its wording about having no substantial previous siblings. */
+table {
+    font-weight: initial; font-style: initial; font-size: initial; line-height: initial;
+    white-space: initial; text-align: initial;
+}
+input:not([type=image i]), textarea { box-sizing: border-box; }
+img[align=left i] { margin-right: 3px; }
+img[align=right i] { margin-left: 3px; }
+body > :first-child, td > :first-child, th > :first-child { margin-top: 0; }
+td > :last-child, th > :last-child { margin-bottom: 0; }

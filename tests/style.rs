@@ -120,6 +120,36 @@ fn generic_monospace_is_smaller_as_in_firefox() {
 }
 
 #[test]
+fn quirks_mode_adds_its_rules() {
+    let quirks = Page::new(
+        "<body><h1 t=first>a</h1><p t=second>b</p><font size=1><table t=table><tr><td t=td><p t=cell>c</p></table></font>\
+         <img t=right align=right>",
+    );
+    assert_eq!(quirks.style("first").margin.top, Size::Px(0.0));
+    assert_eq!(quirks.style("second").margin.top, Size::Px(16.0));
+    assert_eq!(
+        quirks.style("table").font_size,
+        16.0,
+        "tables do not inherit fonts"
+    );
+    assert_eq!(quirks.style("cell").margin.top, Size::Px(0.0));
+    assert_eq!(quirks.style("cell").margin.bottom, Size::Px(0.0));
+    assert_eq!(quirks.style("right").margin.left, Size::Px(3.0));
+
+    let standard =
+        Page::new("<!DOCTYPE html><h1 t=first>a</h1><font size=1><table t=table></table></font>");
+    assert_eq!(standard.style("first").margin.top, Size::Px(0.67 * 32.0));
+    assert_eq!(standard.style("table").font_size, 10.0);
+
+    let author = Page::new("<style>h1 { margin-top: 5px }</style><h1 t=first>a</h1>");
+    assert_eq!(
+        author.style("first").margin.top,
+        Size::Px(5.0),
+        "authors still decide"
+    );
+}
+
+#[test]
 fn later_and_more_specific_rules_win() {
     let color = |css: &str| styled(css).style("a").color;
     assert_eq!(color("p { color: red } p { color: blue }"), BLUE);

@@ -18,10 +18,21 @@ use super::values::{Color, Length, Unit, parse_length};
 /// The browser's own defaults, following the rendering section of the HTML standard.
 const DEFAULT_STYLES: &str = include_str!("default.css");
 
+/// Added to the defaults for documents in quirks mode.
+const QUIRKS_STYLES: &str = include_str!("quirks.css");
+
 /// Distinct styles beyond this reuse the parent's, so that hostile pages stay small.
 const MAX_STYLES: usize = 1 << 20;
 
 static DEFAULT_SHEET: LazyLock<Stylesheet> = LazyLock::new(|| Stylesheet::parse(DEFAULT_STYLES));
+static QUIRKS_SHEET: LazyLock<Stylesheet> = LazyLock::new(|| Stylesheet::parse(QUIRKS_STYLES));
+static QUIRKS_RULES: LazyLock<Vec<Vec<Compiled>>> = LazyLock::new(|| {
+    QUIRKS_SHEET
+        .rules
+        .iter()
+        .map(|rule| compile_rule(&QUIRKS_SHEET, rule))
+        .collect()
+});
 static DEFAULT_RULES: LazyLock<Vec<Vec<Compiled>>> = LazyLock::new(|| {
     DEFAULT_SHEET
         .rules
@@ -206,6 +217,9 @@ pub fn compute_styles(document: &Document, authors: &[Stylesheet], viewport: Vie
         }
     };
     add_sheet(&DEFAULT_SHEET, &DEFAULT_RULES);
+    if quirks {
+        add_sheet(&QUIRKS_SHEET, &QUIRKS_RULES);
+    }
     for (sheet, compiled) in authors.iter().zip(&compiled_authors) {
         for (rule, declarations) in sheet.rules.iter().zip(compiled) {
             if rule
