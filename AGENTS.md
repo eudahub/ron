@@ -41,6 +41,7 @@ Exceptions to English documentation:
 - Long-running tests (network, accounts, or many seconds each) are not part of the committed suite. Run them at most once, when a feature is handed over, not after every change.
 - While working, run only the one or two tests that cover the change, and say which tests were not run.
 - Some tools and especially tests can take long or hang. Run anything that might hang with a moderate time limit (for example the `timeout` command or the tool's own timeout option), not with a long or no limit; when the limit is hit, report it and look for the cause instead of waiting longer.
+- Run anything expected to take more than a few seconds in the background, wherever a time limit would be set, so that a question the user asks in the meantime can be answered at once instead of after the tool ends.
 
 ## Code style
 
