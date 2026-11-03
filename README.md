@@ -59,7 +59,8 @@ equal styles share one. Generic `monospace` text inherits a smaller
 size, 12 pixels where others have 16, as in Firefox on Linux.
 
 The properties cover display, floats, the box model, borders, backgrounds, fonts, text and
-lists. A value ron cannot read drops its declaration. That includes `var()` and `calc()`, on
+lists. Those written by the direction of the text, such as `padding-inline`, always go from left
+to right and from the top down. A value ron cannot read drops its declaration. That includes `var()` and `calc()`, on
 which modern pages rely, so such pages lose part of their styling for now. The styles of
 `::before` and `::after` are not computed. Selector matching has a step budget, so patterns
 such as `.a ~ b` on huge lists stop matching instead of taking hours; `is_limited` reports it.

@@ -207,6 +207,7 @@ pub(super) fn compile(name: &str, value: &str, important: bool, out: &mut Vec<Co
 }
 
 fn compile_inner(name: &str, value: &str, important: bool, out: &mut Vec<Compiled>) -> bool {
+    let name = physical_name(name).unwrap_or(name);
     let text = value.trim();
     let mut push = |prop: Prop, value: Value| {
         out.push(Compiled {
@@ -497,9 +498,79 @@ fn parse_font_weight(text: &str) -> Option<Value> {
     }
 }
 
+/// What a property written by the direction of the text comes to, which is always from left to right
+/// and from the top down, as other directions are not known yet.
+fn physical_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "margin-inline-start" => "margin-left",
+        "margin-inline-end" => "margin-right",
+        "margin-block-start" => "margin-top",
+        "margin-block-end" => "margin-bottom",
+        "padding-inline-start" => "padding-left",
+        "padding-inline-end" => "padding-right",
+        "padding-block-start" => "padding-top",
+        "padding-block-end" => "padding-bottom",
+        "inset-inline-start" => "left",
+        "inset-inline-end" => "right",
+        "inset-block-start" => "top",
+        "inset-block-end" => "bottom",
+        "inline-size" => "width",
+        "block-size" => "height",
+        "min-inline-size" => "min-width",
+        "min-block-size" => "min-height",
+        "max-inline-size" => "max-width",
+        "max-block-size" => "max-height",
+        "border-inline-start" => "border-left",
+        "border-inline-end" => "border-right",
+        "border-block-start" => "border-top",
+        "border-block-end" => "border-bottom",
+        "border-inline-start-width" => "border-left-width",
+        "border-inline-end-width" => "border-right-width",
+        "border-block-start-width" => "border-top-width",
+        "border-block-end-width" => "border-bottom-width",
+        "border-inline-start-style" => "border-left-style",
+        "border-inline-end-style" => "border-right-style",
+        "border-block-start-style" => "border-top-style",
+        "border-block-end-style" => "border-bottom-style",
+        "border-inline-start-color" => "border-left-color",
+        "border-inline-end-color" => "border-right-color",
+        "border-block-start-color" => "border-top-color",
+        "border-block-end-color" => "border-bottom-color",
+        _ => return None,
+    })
+}
+
 fn shorthand_longhands(name: &str) -> Option<&'static [Prop]> {
     use Prop as P;
     Some(match name {
+        "margin-inline" => &[P::MarginLeft, P::MarginRight],
+        "margin-block" => &[P::MarginTop, P::MarginBottom],
+        "padding-inline" => &[P::PaddingLeft, P::PaddingRight],
+        "padding-block" => &[P::PaddingTop, P::PaddingBottom],
+        "inset-inline" => &[P::Left, P::Right],
+        "inset-block" => &[P::Top, P::Bottom],
+        "border-inline-width" => &[P::BorderLeftWidth, P::BorderRightWidth],
+        "border-block-width" => &[P::BorderTopWidth, P::BorderBottomWidth],
+        "border-inline-style" => &[P::BorderLeftStyle, P::BorderRightStyle],
+        "border-block-style" => &[P::BorderTopStyle, P::BorderBottomStyle],
+        "border-inline-color" => &[P::BorderLeftColor, P::BorderRightColor],
+        "border-block-color" => &[P::BorderTopColor, P::BorderBottomColor],
+        "border-inline" => &[
+            P::BorderLeftWidth,
+            P::BorderRightWidth,
+            P::BorderLeftStyle,
+            P::BorderRightStyle,
+            P::BorderLeftColor,
+            P::BorderRightColor,
+        ],
+        "border-block" => &[
+            P::BorderTopWidth,
+            P::BorderBottomWidth,
+            P::BorderTopStyle,
+            P::BorderBottomStyle,
+            P::BorderTopColor,
+            P::BorderBottomColor,
+        ],
         "margin" => &[P::MarginTop, P::MarginRight, P::MarginBottom, P::MarginLeft],
         "inset" => &[P::Top, P::Right, P::Bottom, P::Left],
         "padding" => &[
@@ -600,9 +671,20 @@ fn expand_shorthand(name: &str, text: &str, push: &mut impl FnMut(Prop, Value)) 
         "margin" | "inset" | "padding" | "border-width" | "border-style" | "border-color" => {
             expand_sides(longhands, text, push)
         }
-        "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
-            expand_border(longhands, text, push)
-        }
+        "margin-inline"
+        | "margin-block"
+        | "padding-inline"
+        | "padding-block"
+        | "inset-inline"
+        | "inset-block"
+        | "border-inline-width"
+        | "border-block-width"
+        | "border-inline-style"
+        | "border-block-style"
+        | "border-inline-color"
+        | "border-block-color" => expand_two_sides(longhands, text, push),
+        "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+        | "border-inline" | "border-block" => expand_border(longhands, text, push),
         "background" => expand_background(text, push),
         "background-position" => match parse_position(&split_words(text)) {
             Some((x, y)) => {
@@ -883,6 +965,25 @@ fn expand_sides(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Valu
     for (prop, value) in values {
         push(prop, value);
     }
+    true
+}
+
+/// One value for both sides, or one for each.
+fn expand_two_sides(longhands: &[Prop], text: &str, push: &mut impl FnMut(Prop, Value)) -> bool {
+    let words = split_words(text);
+    let (first, second) = match words[..] {
+        [both] => (both, both),
+        [first, second] => (first, second),
+        _ => return false,
+    };
+    let (Some(first), Some(second)) = (
+        parse_longhand(longhands[0], first),
+        parse_longhand(longhands[1], second),
+    ) else {
+        return false;
+    };
+    push(longhands[0], first);
+    push(longhands[1], second);
     true
 }
 
