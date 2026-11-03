@@ -81,8 +81,30 @@ fn defaults_follow_the_standard() {
     assert_eq!(page.style("th").text_align, TextAlign::Center);
     assert_eq!(page.style("pre").white_space, WhiteSpace::Pre);
     assert_eq!(page.style("pre").font_family.as_ref(), "monospace");
+    assert_eq!(page.style("pre").font_size, 12.0);
     assert_eq!(page.style("hr").border_style.top, BorderStyle::Inset);
     assert_eq!(page.style("hr").border_width.top, 1.0);
+}
+
+#[test]
+fn generic_monospace_is_smaller_as_in_firefox() {
+    let page = Page::new(
+        "<!DOCTYPE html><pre t=pre>a<code t=inner>b</code></pre><code t=code>c</code>\
+         <p style='font-size:20px'><code t=scaled>d</code></p>\
+         <code t=own style='font-size:18px'>e</code>\
+         <div t=css style='font-family:monospace'>f<span t=back style='font-family:serif'>g</span></div>\
+         <div t=named style='font-family:Courier'>h</div>\
+         <div t=hack style='font-family:monospace, monospace'>i</div>",
+    );
+    assert_eq!(page.style("pre").font_size, 12.0);
+    assert_eq!(page.style("inner").font_size, 12.0, "not again when nested");
+    assert_eq!(page.style("code").font_size, 12.0);
+    assert_eq!(page.style("scaled").font_size, 15.0);
+    assert_eq!(page.style("own").font_size, 18.0, "a size that is set stays");
+    assert_eq!(page.style("css").font_size, 12.0, "with the family from an author too");
+    assert_eq!(page.style("back").font_size, 16.0, "and back again");
+    assert_eq!(page.style("named").font_size, 16.0, "only the generic family");
+    assert_eq!(page.style("hack").font_size, 16.0, "the way pages avoid it");
 }
 
 #[test]

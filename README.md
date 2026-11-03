@@ -52,7 +52,8 @@ live page, such as `:hover`, are valid but do not match yet, and `:has()` counts
 HTML standard, then old presentational attributes such as `bgcolor` and `<font size>`, then
 author rules and `style` attributes, with specificity, `!important`, inheritance and `@media`
 conditions. `document_stylesheets` collects a page's `<style>` elements; the caller fetches
-any others. Elements with equal styles share one.
+any others. Elements with equal styles share one. Generic `monospace` text inherits a smaller
+size, 12 pixels where others have 16, as in Firefox on Linux.
 
 The properties cover display, floats, the box model, borders, backgrounds, fonts, text and
 lists. A value ron cannot read drops its declaration. That includes `var()` and `calc()`, on

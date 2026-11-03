@@ -217,7 +217,8 @@ pub(super) fn compute(
     let mut style = ComputedStyle::inheriting(parent);
     let get = |prop: Prop| cascaded[prop as usize];
     let font_size = match get(Prop::FontSize) {
-        None | Some(Value::Inherit) => parent.font_size,
+        None => inherited_font_size(parent, get(Prop::FontFamily)),
+        Some(Value::Inherit) => parent.font_size,
         Some(Value::Initial) => initial.font_size,
         Some(Value::Number(px)) => *px,
         Some(Value::FontRelative(true)) => parent.font_size * 1.2,
@@ -278,6 +279,28 @@ pub(super) fn compute(
         style.border_width.left = 0.0;
     }
     style
+}
+
+/// Browsers show the generic monospace font smaller than others at the same size. Firefox on
+/// Linux shows it at 12 pixels where others have 16, and this follows it. The size only
+/// changes when it is inherited across a change between monospace and something else.
+const MONOSPACE_RATIO: f32 = 0.75;
+
+fn is_generic_monospace(family: &str) -> bool {
+    family.eq_ignore_ascii_case("monospace")
+}
+
+fn inherited_font_size(parent: &ComputedStyle, family: Option<&Value>) -> f32 {
+    let was = is_generic_monospace(&parent.font_family);
+    let is = match family {
+        Some(Value::Family(family)) => is_generic_monospace(family),
+        _ => was,
+    };
+    match (was, is) {
+        (false, true) => parent.font_size * MONOSPACE_RATIO,
+        (true, false) => parent.font_size / MONOSPACE_RATIO,
+        _ => parent.font_size,
+    }
 }
 
 /// Floats, positioned boxes and root elements cannot be inline.
