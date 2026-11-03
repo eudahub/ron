@@ -10,4 +10,4 @@ mod tokenizer;
 mod html_parser;
 
 pub use attributes::{Attribute, attributes};
-pub use tokenizer::{Token, TokenKind, Tokenizer, tag_name};
+pub use tokenizer::{StreamTokenizer, Token, TokenKind, Tokenizer, tag_name};

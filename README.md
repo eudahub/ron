@@ -13,6 +13,13 @@ broken markup, and runs in linear time. Attributes are read on demand from the s
 text of a tag with `ron::html::attributes`, without copying. Character references are
 not decoded yet.
 
+`ron::html::StreamTokenizer` does the same for a document that arrives in pieces, as from
+a network. Call `feed` with each piece, `next_token` until it returns `None`, and `finish`
+at the end. A token is returned once later input cannot change it, so a page can be shown
+before it has fully arrived; text and raw text come as far as they have arrived, possibly
+as several adjacent tokens. Pieces must be valid UTF-8, so a decoder has to keep a
+multi-byte character cut by a piece boundary for the next piece.
+
 Real pages do not nest properly, so `grammars/html.ag` describes a flat stream of tokens
 and nesting is left to a tree builder. Input must already be UTF-8; detecting and
 converting legacy encodings is up to the calling program.
@@ -23,6 +30,7 @@ converting legacy encodings is up to the calling program.
 cargo build --release
 target/release/ron-dump page.html          # print tokens and attributes
 target/release/ron-dump --stats page.html  # token counts and tokenizing time
+target/release/ron-dump --chunk 1400 page.html  # the same through the stream tokenizer
 cargo test
 ```
 
