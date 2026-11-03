@@ -1,6 +1,7 @@
 //! HTML parsing.
 
 mod attributes;
+mod doctype;
 mod dom;
 mod entities;
 mod parser;
@@ -14,7 +15,8 @@ mod tokenizer;
 mod html_parser;
 
 pub use attributes::{Attribute, Attributes, attributes};
-pub use dom::{Children, Descendants, Document, NodeId, NodeKind};
+pub use doctype::Doctype;
+pub use dom::{Children, Descendants, Document, ElementAttributes, Namespace, NodeId, NodeKind};
 pub use parser::{Parser, parse};
 pub use tag::Tag;
 pub use tokenizer::{StreamTokenizer, Token, TokenKind, Tokenizer, tag_name};

@@ -2,7 +2,8 @@
 
 use std::borrow::Cow;
 
-use super::attributes::{Attributes, attributes};
+use super::attributes::{Attribute, Attributes, attributes};
+use super::doctype::Doctype;
 use super::entities::{Context, decode};
 use super::tag::Tag;
 use super::tokenizer::tag_name;
@@ -19,6 +20,15 @@ pub enum NodeKind {
     Element,
     Text,
     Comment,
+    /// The inert contents of a `<template>`, held as its only child.
+    Fragment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Namespace {
+    Html,
+    Svg,
+    MathMl,
 }
 
 /// Twenty-eight bytes per node keep the tree close to the size of the source. The first
@@ -33,6 +43,7 @@ struct Node {
     length: u32,
     tag: Tag,
     kind: NodeKind,
+    namespace: Namespace,
     /// On the tree builder's stack of open elements.
     open: bool,
 }
@@ -44,6 +55,10 @@ const _: () = assert!(size_of::<Node>() == 28);
 pub struct Document {
     pub(super) source: String,
     nodes: Vec<Node>,
+    /// Tags whose attributes were added to an existing `<html>` or `<body>`, as
+    /// (element, start, end) in the source.
+    merged_attributes: Vec<(u32, u32, u32)>,
+    quirks: bool,
 }
 
 impl Default for Document {
@@ -57,6 +72,8 @@ impl Document {
         let mut document = Self {
             source: String::new(),
             nodes: Vec::new(),
+            merged_attributes: Vec::new(),
+            quirks: false,
         };
         document.create(NodeKind::Document, Tag::Other, 0..0);
         document
@@ -79,6 +96,7 @@ impl Document {
             length: u32::try_from(span.len()).unwrap_or(u32::MAX),
             tag,
             kind,
+            namespace: Namespace::Html,
             open: false,
         });
         id
@@ -88,7 +106,10 @@ impl Document {
         let node = self.node(id);
         let start = node.start as usize;
         let (kind, tag, length) = (node.kind, node.tag, node.length as usize);
-        self.create(kind, tag, start..start + length)
+        let namespace = node.namespace;
+        let clone = self.create(kind, tag, start..start + length);
+        self.set_namespace(clone, namespace);
+        clone
     }
 
     pub(super) fn append(&mut self, parent: NodeId, child: NodeId) {
@@ -103,6 +124,44 @@ impl Document {
             self.nodes[child.0 as usize].previous = last;
             self.nodes[first as usize].previous = child.0;
         }
+    }
+
+    pub(super) fn set_namespace(&mut self, id: NodeId, namespace: Namespace) {
+        self.nodes[id.0 as usize].namespace = namespace;
+    }
+
+    pub(super) fn set_quirks(&mut self, quirks: bool) {
+        self.quirks = quirks;
+    }
+
+    /// Adds the attributes of a later tag to an element, without replacing any.
+    pub(super) fn merge_attributes(&mut self, id: NodeId, span: &std::ops::Range<usize>) {
+        let start = u32::try_from(span.start).unwrap_or(u32::MAX);
+        let end = u32::try_from(span.end).unwrap_or(u32::MAX);
+        self.merged_attributes.push((id.0, start, end));
+    }
+
+    /// Inserts `child` in front of `before`, a child of `parent`.
+    pub(super) fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
+        let previous = self.node(before).previous;
+        self.nodes[child.0 as usize].parent = parent.0;
+        self.nodes[child.0 as usize].next = before.0;
+        self.nodes[child.0 as usize].previous = previous;
+        self.nodes[before.0 as usize].previous = child.0;
+        if self.nodes[parent.0 as usize].first_child == before.0 {
+            self.nodes[parent.0 as usize].first_child = child.0;
+        } else {
+            self.nodes[previous as usize].next = child.0;
+        }
+    }
+
+    /// The child in front of `id`.
+    pub(super) fn previous_sibling(&self, id: NodeId) -> Option<NodeId> {
+        let node = self.node(id);
+        let parent = Self::link(node.parent)?;
+        (self.node(parent).first_child != id.0)
+            .then(|| Self::link(node.previous))
+            .flatten()
     }
 
     pub(super) fn detach(&mut self, id: NodeId) {
@@ -156,6 +215,7 @@ impl Document {
     pub(super) fn shrink_to_fit(&mut self) {
         self.source.shrink_to_fit();
         self.nodes.shrink_to_fit();
+        self.merged_attributes.shrink_to_fit();
     }
 
     fn node(&self, id: NodeId) -> &Node {
@@ -179,6 +239,17 @@ impl Document {
     #[must_use]
     pub fn tag(&self, id: NodeId) -> Tag {
         self.node(id).tag
+    }
+
+    #[must_use]
+    pub fn namespace(&self, id: NodeId) -> Namespace {
+        self.node(id).namespace
+    }
+
+    /// Whether the doctype, or the lack of one, selects the rendering of old browsers.
+    #[must_use]
+    pub fn is_quirks(&self) -> bool {
+        self.quirks
     }
 
     #[must_use]
@@ -211,43 +282,108 @@ impl Document {
         &self.source[start..start + node.length as usize]
     }
 
-    /// The content of a text node as it should be shown: character references decoded,
-    /// except in elements whose content is not markup, and line ends normalized.
+    /// The content of a text node as it should be shown: line ends normalized and
+    /// character references decoded, except in elements whose content is not markup.
     #[must_use]
     pub fn decoded_text(&self, id: NodeId) -> Cow<'_, str> {
         let raw = self.text(id);
-        let parent = self
-            .parent(id)
-            .map_or(Tag::Other, |parent| self.tag(parent));
-        let decoded = if parent.is_raw_text() && !matches!(parent, Tag::Title | Tag::Textarea) {
+        let parent = self.parent(id);
+        let tag = parent.map_or(Tag::Other, |parent| self.tag(parent));
+        let foreign = parent.is_some_and(|parent| self.namespace(parent) != Namespace::Html)
+            && !tag.is_html_integration_point()
+            && !tag.is_math_text_integration_point();
+        let cleaned = if raw.contains(['\r', '\0']) {
+            let lines = raw.replace("\r\n", "\n").replace('\r', "\n");
+            let replacement = if tag.is_raw_text() || foreign {
+                "\u{fffd}"
+            } else {
+                ""
+            };
+            Cow::Owned(lines.replace('\0', replacement))
+        } else {
             Cow::Borrowed(raw)
-        } else {
-            decode(raw, Context::Text)
         };
-        if !decoded.contains(['\r', '\0']) {
-            return decoded;
+        if tag.is_raw_text() && !matches!(tag, Tag::Title | Tag::Textarea) {
+            return cleaned;
         }
-        let lines = decoded.replace("\r\n", "\n").replace('\r', "\n");
-        Cow::Owned(if parent.is_raw_text() {
-            lines.replace('\0', "\u{fffd}")
+        match cleaned {
+            Cow::Borrowed(text) => decode(text, Context::Text),
+            Cow::Owned(text) => Cow::Owned(decode(&text, Context::Text).into_owned()),
+        }
+    }
+
+    /// The text of a comment, without its delimiters.
+    #[must_use]
+    pub fn comment_text(&self, id: NodeId) -> Cow<'_, str> {
+        let raw = self.text(id);
+        let text = if let Some(body) = raw.strip_prefix("<!--") {
+            if matches!(body, ">" | "->") {
+                ""
+            } else if let Some(text) = body.strip_suffix("-->").or(body.strip_suffix("--!>")) {
+                text
+            } else {
+                // The input ended inside the comment.
+                body.strip_suffix("--")
+                    .or(body.strip_suffix('-'))
+                    .unwrap_or(body)
+            }
         } else {
-            lines.replace('\0', "")
-        })
+            let body = raw.strip_suffix('>').unwrap_or(raw);
+            body.strip_prefix("</")
+                .or(body.strip_prefix("<!"))
+                .or(body.strip_prefix('<'))
+                .unwrap_or(body)
+        };
+        if text.contains(['\r', '\0']) {
+            let lines = text.replace("\r\n", "\n").replace('\r', "\n");
+            Cow::Owned(lines.replace('\0', "\u{fffd}"))
+        } else {
+            Cow::Borrowed(text)
+        }
+    }
+
+    /// Reads a doctype node.
+    #[must_use]
+    pub fn doctype(&self, id: NodeId) -> Doctype {
+        Doctype::parse(self.text(id))
     }
 
     /// The element name: lowercase for known tags, as written otherwise.
     #[must_use]
     pub fn name(&self, id: NodeId) -> &str {
         match self.tag(id) {
-            Tag::Other => tag_name(self.text(id)),
-            tag => tag.as_str(),
+            tag if tag != Tag::Other && self.namespace(id) == Namespace::Html => tag.as_str(),
+            _ => tag_name(self.text(id)),
+        }
+    }
+
+    /// The name as the DOM reports it: lowercase, with the mixed case of known SVG names.
+    #[must_use]
+    pub fn local_name(&self, id: NodeId) -> Cow<'_, str> {
+        let name = self.name(id);
+        if self.namespace(id) == Namespace::Svg {
+            let lower = name.to_ascii_lowercase();
+            if let Some((_, adjusted)) = SVG_NAMES.iter().find(|(from, _)| *from == lower) {
+                return Cow::Borrowed(adjusted);
+            }
+            return Cow::Owned(lower);
+        }
+        if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Owned(name.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(name)
         }
     }
 
     /// Reads the attributes of an element from its start tag.
     #[must_use]
-    pub fn attributes(&self, id: NodeId) -> Attributes<'_> {
-        attributes(self.text(id))
+    pub fn attributes(&self, id: NodeId) -> ElementAttributes<'_> {
+        ElementAttributes {
+            document: self,
+            id: id.0,
+            current: attributes(self.text(id)),
+            next_merged: 0,
+        }
     }
 
     #[must_use]
@@ -299,6 +435,72 @@ impl Document {
         self.source.capacity()
     }
 }
+
+/// The attributes of an element: those of its tag, then any added by later tags.
+pub struct ElementAttributes<'a> {
+    document: &'a Document,
+    id: u32,
+    current: Attributes<'a>,
+    next_merged: usize,
+}
+
+impl<'a> Iterator for ElementAttributes<'a> {
+    type Item = Attribute<'a>;
+
+    fn next(&mut self) -> Option<Attribute<'a>> {
+        loop {
+            if let Some(attribute) = self.current.next() {
+                return Some(attribute);
+            }
+            let &(id, start, end) = self.document.merged_attributes.get(self.next_merged)?;
+            self.next_merged += 1;
+            if id == self.id {
+                let text = &self.document.source[start as usize..end as usize];
+                self.current = attributes(text);
+            }
+        }
+    }
+}
+
+const SVG_NAMES: [(&str, &str); 37] = [
+    ("altglyph", "altGlyph"),
+    ("altglyphdef", "altGlyphDef"),
+    ("altglyphitem", "altGlyphItem"),
+    ("animatecolor", "animateColor"),
+    ("animatemotion", "animateMotion"),
+    ("animatetransform", "animateTransform"),
+    ("clippath", "clipPath"),
+    ("feblend", "feBlend"),
+    ("fecolormatrix", "feColorMatrix"),
+    ("fecomponenttransfer", "feComponentTransfer"),
+    ("fecomposite", "feComposite"),
+    ("feconvolvematrix", "feConvolveMatrix"),
+    ("fediffuselighting", "feDiffuseLighting"),
+    ("fedisplacementmap", "feDisplacementMap"),
+    ("fedistantlight", "feDistantLight"),
+    ("fedropshadow", "feDropShadow"),
+    ("feflood", "feFlood"),
+    ("fefunca", "feFuncA"),
+    ("fefuncb", "feFuncB"),
+    ("fefuncg", "feFuncG"),
+    ("fefuncr", "feFuncR"),
+    ("fegaussianblur", "feGaussianBlur"),
+    ("feimage", "feImage"),
+    ("femerge", "feMerge"),
+    ("femergenode", "feMergeNode"),
+    ("femorphology", "feMorphology"),
+    ("feoffset", "feOffset"),
+    ("fepointlight", "fePointLight"),
+    ("fespecularlighting", "feSpecularLighting"),
+    ("fespotlight", "feSpotLight"),
+    ("fetile", "feTile"),
+    ("feturbulence", "feTurbulence"),
+    ("foreignobject", "foreignObject"),
+    ("glyphref", "glyphRef"),
+    ("lineargradient", "linearGradient"),
+    ("radialgradient", "radialGradient"),
+    ("textpath", "textPath"),
+];
 
 pub struct Children<'a> {
     document: &'a Document,

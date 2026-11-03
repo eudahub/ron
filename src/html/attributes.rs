@@ -18,9 +18,10 @@ impl<'a> Attribute<'a> {
     #[must_use]
     pub fn decoded_value(&self) -> Cow<'a, str> {
         let value = self.value.unwrap_or("");
-        if value.contains('\0') {
-            let replaced = value.replace('\0', "\u{fffd}");
-            return Cow::Owned(decode(&replaced, Context::Attribute).into_owned());
+        if value.contains(['\r', '\0']) {
+            let lines = value.replace("\r\n", "\n").replace('\r', "\n");
+            let cleaned = lines.replace('\0', "\u{fffd}");
+            return Cow::Owned(decode(&cleaned, Context::Attribute).into_owned());
         }
         decode(value, Context::Attribute)
     }
@@ -38,6 +39,13 @@ pub fn attributes(tag: &str) -> Attributes<'_> {
 
 pub struct Attributes<'a> {
     rest: &'a str,
+}
+
+/// Whether a tag's text ends with its closing `>`, not one inside an unclosed quote.
+pub(super) fn is_closed_tag(tag: &str) -> bool {
+    let mut attributes = attributes(tag);
+    while attributes.next().is_some() {}
+    attributes.rest.starts_with('>')
 }
 
 impl Attributes<'_> {

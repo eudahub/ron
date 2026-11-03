@@ -56,35 +56,86 @@ tags! {
     Style "style" Summary "summary" Svg "svg" Table "table" Tbody "tbody" Td "td"
     Template "template" Textarea "textarea" Tfoot "tfoot" Th "th" Thead "thead"
     Title "title" Tr "tr" Track "track" Tt "tt" U "u" Ul "ul" Wbr "wbr" Xmp "xmp"
+    Image "image" Ruby "ruby" Span "span" Sub "sub" Sup "sup" Var "var"
+    // Foreign elements that matter to tree construction. A name can never match these
+    // texts, so an HTML element with the same name stays a different tag.
+    SvgForeignObject "\0svg:foreignobject" SvgDesc "\0svg:desc" SvgTitle "\0svg:title"
+    MathMi "\0math:mi" MathMo "\0math:mo" MathMn "\0math:mn" MathMs "\0math:ms"
+    MathMtext "\0math:mtext" MathAnnotationXml "\0math:annotation-xml"
+    MathAnnotationHtml "\0math:annotation-html"
 }
 
 impl Tag {
-    /// Elements that never have content.
-    pub(super) fn is_void(self) -> bool {
-        use Tag::{
-            Area, Base, Basefont, Bgsound, Br, Col, Embed, Frame, Hr, Img, Input, Keygen, Link,
-            Meta, Param, Source, Track, Wbr,
-        };
+    /// Foreign elements that also bound the scope of an element search.
+    pub(super) fn is_foreign_boundary(self) -> bool {
+        self.is_html_integration_point()
+            || self.is_math_text_integration_point()
+            || self == Tag::MathAnnotationXml
+    }
+
+    /// Foreign elements whose content follows the HTML rules.
+    pub(super) fn is_html_integration_point(self) -> bool {
         matches!(
             self,
-            Area | Base
-                | Basefont
-                | Bgsound
-                | Br
-                | Col
-                | Embed
-                | Frame
-                | Hr
-                | Img
-                | Input
-                | Keygen
-                | Link
-                | Meta
-                | Param
-                | Source
-                | Track
-                | Wbr
+            Tag::SvgForeignObject | Tag::SvgDesc | Tag::SvgTitle | Tag::MathAnnotationHtml
         )
+    }
+
+    pub(super) fn is_math_text_integration_point(self) -> bool {
+        matches!(
+            self,
+            Tag::MathMi | Tag::MathMo | Tag::MathMn | Tag::MathMs | Tag::MathMtext
+        )
+    }
+
+    /// HTML start tags that end foreign content.
+    pub(super) fn breaks_out_of_foreign(self) -> bool {
+        use Tag::{
+            B, Big, Blockquote, Body, Br, Center, Code, Dd, Div, Dl, Dt, Em, Embed, Head, Hr, I,
+            Img, Li, Listing, Menu, Meta, Nobr, Ol, P, Pre, Ruby, S, Small, Span, Strike, Strong,
+            Sub, Sup, Table, Tt, U, Ul, Var,
+        };
+        self.is_heading()
+            || matches!(
+                self,
+                B | Big
+                    | Blockquote
+                    | Body
+                    | Br
+                    | Center
+                    | Code
+                    | Dd
+                    | Div
+                    | Dl
+                    | Dt
+                    | Em
+                    | Embed
+                    | Head
+                    | Hr
+                    | I
+                    | Img
+                    | Li
+                    | Listing
+                    | Menu
+                    | Meta
+                    | Nobr
+                    | Ol
+                    | P
+                    | Pre
+                    | Ruby
+                    | S
+                    | Small
+                    | Span
+                    | Strike
+                    | Strong
+                    | Sub
+                    | Sup
+                    | Table
+                    | Tt
+                    | U
+                    | Ul
+                    | Var
+            )
     }
 
     pub(super) fn is_heading(self) -> bool {
@@ -143,7 +194,7 @@ impl Tag {
     /// Elements an end tag closes only when they are in scope, with implied ends.
     pub(super) fn closes_as_block(self) -> bool {
         (self.closes_paragraph() && self != Tag::P)
-            || matches!(self, Tag::Pre | Tag::Listing | Tag::Button)
+            || matches!(self, Tag::Pre | Tag::Listing | Tag::Button | Tag::Select)
     }
 
     /// The HTML "special" category, which stops searches for an element.
@@ -157,6 +208,7 @@ impl Tag {
         };
         (self.closes_paragraph() && self != Tag::P)
             || self.is_heading()
+            || self.is_foreign_boundary()
             || matches!(
                 self,
                 Tag::P
@@ -225,32 +277,12 @@ impl Tag {
         )
     }
 
-    /// Elements whose content the tokenizer returns as raw text.
+    /// HTML elements whose content is not markup at all.
     pub(super) fn is_raw_text(self) -> bool {
         use Tag::{Iframe, Noembed, Noframes, Plaintext, Script, Style, Textarea, Title, Xmp};
         matches!(
             self,
             Iframe | Noembed | Noframes | Plaintext | Script | Style | Textarea | Title | Xmp
-        )
-    }
-
-    /// Elements that belong in `<head>`.
-    pub(super) fn is_head_content(self) -> bool {
-        use Tag::{
-            Base, Basefont, Bgsound, Link, Meta, Noframes, Noscript, Script, Style, Template, Title,
-        };
-        matches!(
-            self,
-            Base | Basefont
-                | Bgsound
-                | Link
-                | Meta
-                | Noframes
-                | Noscript
-                | Script
-                | Style
-                | Template
-                | Title
         )
     }
 }

@@ -8,8 +8,8 @@ use std::ops::Range;
 use super::html_parser::LEXER_TABLES;
 
 /// Elements whose content is text up to the matching end tag, not markup.
-const RAW_TEXT_ELEMENTS: [&str; 8] = [
-    "script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes",
+const RAW_TEXT_ELEMENTS: [&str; 7] = [
+    "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +131,17 @@ enum Mode {
     RawText(Range<usize>),
     /// `<plaintext>`: raw text that no end tag can close.
     PlainText,
+    Script(ScriptState),
+    /// The content of `<![CDATA[`, returned as raw text.
+    Cdata,
+}
+
+/// Script content may hide end tags in a comment, as `<!-- <script></script> -->`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScriptState {
+    Data,
+    Escaped,
+    DoubleEscaped,
 }
 
 impl Default for Mode {
@@ -143,9 +154,38 @@ impl Default for Mode {
 pub(super) struct Scanner {
     offset: usize,
     mode: Mode,
+    /// The tree builder chooses raw-text modes instead of the element name doing so.
+    guided: bool,
 }
 
 impl Scanner {
+    pub(super) fn guided() -> Self {
+        Self {
+            guided: true,
+            ..Self::default()
+        }
+    }
+
+    /// Reads what follows as raw text up to the end tag with the name at this range.
+    pub(super) fn enter_raw_text(&mut self, name: Range<usize>) {
+        self.mode = Mode::RawText(name);
+    }
+
+    pub(super) fn enter_plain_text(&mut self) {
+        self.mode = Mode::PlainText;
+    }
+
+    pub(super) fn enter_script(&mut self) {
+        self.mode = Mode::Script(ScriptState::Data);
+    }
+
+    /// Reads from `offset`, just after `<![CDATA[`, which rewinds over the rest of the
+    /// token already returned.
+    pub(super) fn enter_cdata(&mut self, offset: usize) {
+        self.offset = offset;
+        self.mode = Mode::Cdata;
+    }
+
     /// Returns the next token that is final, given whether `source` is the whole input.
     pub(super) fn next(&mut self, source: &str, complete: bool) -> Option<Token> {
         loop {
@@ -180,7 +220,7 @@ impl Scanner {
                         }
                         _ => TokenKind::Text,
                     };
-                    self.mode = if kind == TokenKind::StartTag {
+                    self.mode = if kind == TokenKind::StartTag && !self.guided {
                         mode_after_start_tag(source, start..end)
                     } else {
                         Mode::Markup(DfaScan {
@@ -226,6 +266,44 @@ impl Scanner {
                     if !complete {
                         return None;
                     }
+                }
+                Mode::Script(state) => {
+                    let (end, closed) =
+                        script_text_end(source.as_bytes(), self.offset, state, complete);
+                    if let Some(token) = self.finish_raw_step(end, closed) {
+                        return Some(token);
+                    }
+                    if !closed {
+                        return None;
+                    }
+                }
+                Mode::Cdata => {
+                    let rest = &source[self.offset..];
+                    let found = rest.find("]]>");
+                    if found == Some(0) {
+                        self.offset += 3;
+                        self.mode = Mode::Markup(DfaScan {
+                            cursor: self.offset,
+                            ..DfaScan::default()
+                        });
+                        continue;
+                    }
+                    let end = match found {
+                        Some(position) => self.offset + position,
+                        None if complete => source.len(),
+                        None => {
+                            // Up to two bytes may be the start of the closing sequence.
+                            let kept = rest
+                                .strip_suffix("]]")
+                                .or(rest.strip_suffix(']'))
+                                .unwrap_or(rest);
+                            self.offset + kept.len()
+                        }
+                    };
+                    if let Some(token) = self.finish_raw_step(end, complete && found.is_none()) {
+                        return Some(token);
+                    }
+                    found?;
                 }
             }
         }
@@ -348,6 +426,9 @@ fn mode_after_start_tag(source: &str, tag: Range<usize>) -> Mode {
     if name.eq_ignore_ascii_case("plaintext") {
         return Mode::PlainText;
     }
+    if name.eq_ignore_ascii_case("script") {
+        return Mode::Script(ScriptState::Data);
+    }
     if RAW_TEXT_ELEMENTS
         .iter()
         .any(|raw| name.eq_ignore_ascii_case(raw))
@@ -392,4 +473,92 @@ fn raw_text_end(source: &[u8], offset: usize, name: &str, complete: bool) -> (us
                 .is_none_or(|rest| rest.eq_ignore_ascii_case(&name.as_bytes()[..rest.len()]))
     });
     (held.unwrap_or(source.len()), false)
+}
+
+/// How a pattern compares with the input at some position.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Found {
+    No,
+    /// The input ends inside the pattern, so more input may complete it.
+    Partly,
+    Yes,
+}
+
+fn compare(source: &[u8], index: usize, pattern: &[u8], delimiter: bool) -> Found {
+    let rest = &source[index..];
+    let common = rest.len().min(pattern.len());
+    if !rest[..common].eq_ignore_ascii_case(&pattern[..common]) {
+        return Found::No;
+    }
+    if rest.len() < pattern.len() {
+        return Found::Partly;
+    }
+    if !delimiter {
+        return Found::Yes;
+    }
+    match rest.get(pattern.len()) {
+        None => Found::Partly,
+        Some(b' ' | b'\t' | b'\r' | b'\n' | 0x0c | b'/' | b'>') => Found::Yes,
+        Some(_) => Found::No,
+    }
+}
+
+/// Like [`raw_text_end`] for script content, following the states that comments create.
+fn script_text_end(
+    source: &[u8],
+    offset: usize,
+    state: &mut ScriptState,
+    complete: bool,
+) -> (usize, bool) {
+    let mut index = offset;
+    while index < source.len() {
+        let mut steps: [(&[u8], bool); 2] = [(b"", false); 2];
+        match (source[index], *state) {
+            (b'<', ScriptState::Data) => {
+                steps = [(b"<!--", false), (b"</script", true)];
+            }
+            (b'<', ScriptState::Escaped) => {
+                steps = [(b"<script", true), (b"</script", true)];
+            }
+            (b'<', ScriptState::DoubleEscaped) => steps[0] = (b"</script", true),
+            (b'-', ScriptState::Escaped | ScriptState::DoubleEscaped) => steps[0] = (b"-->", false),
+            _ => {}
+        }
+        let mut advance = 1;
+        for (pattern, delimiter) in steps {
+            if pattern.is_empty() {
+                continue;
+            }
+            match compare(source, index, pattern, delimiter) {
+                Found::No => {}
+                Found::Partly if complete => {}
+                Found::Partly => return (index, false),
+                Found::Yes => {
+                    match (pattern, *state) {
+                        (b"<!--", _) => {
+                            *state = ScriptState::Escaped;
+                            // The dashes also count towards a closing `-->`.
+                            advance = 2;
+                        }
+                        (b"-->", _) => {
+                            *state = ScriptState::Data;
+                            advance = 3;
+                        }
+                        (b"<script", _) => {
+                            *state = ScriptState::DoubleEscaped;
+                            advance = pattern.len();
+                        }
+                        (_, ScriptState::DoubleEscaped) => {
+                            *state = ScriptState::Escaped;
+                            advance = pattern.len();
+                        }
+                        _ => return (index, true),
+                    }
+                    break;
+                }
+            }
+        }
+        index += advance;
+    }
+    (source.len(), complete)
 }

@@ -6,7 +6,11 @@
 use std::fmt::Write as _;
 use std::panic::catch_unwind;
 
-use ron::html::{Document, NodeId, NodeKind, parse};
+use ron::html::{Document, Namespace, NodeId, NodeKind, parse};
+
+/// What still fails: `<selectedcontent>` copies of the selected option, which has no use
+/// without scripting, and a newline after `<pre>` that is written as a character reference.
+const PASSING_CASES: usize = 1587;
 
 struct Case {
     data: String,
@@ -21,7 +25,8 @@ fn read_cases(text: &str) -> (Vec<Case>, usize) {
         let Some((data, rest)) = block.split_once("\n#errors\n") else {
             continue;
         };
-        if rest.contains("\n#document-fragment\n") || rest.contains("\n#script-on\n") {
+        let lines = || rest.split('\n').take_while(|line| *line != "#document");
+        if lines().any(|line| matches!(line, "#document-fragment" | "#script-on")) {
             skipped += 1;
             continue;
         }
@@ -36,47 +41,105 @@ fn read_cases(text: &str) -> (Vec<Case>, usize) {
     (cases, skipped)
 }
 
-fn comment_text(raw: &str) -> &str {
-    if let Some(body) = raw.strip_prefix("<!--") {
-        let body = body
-            .strip_suffix("-->")
-            .or(body.strip_suffix("--!>"))
-            .unwrap_or(body);
-        return body
-            .strip_suffix("--")
-            .or(body.strip_suffix('-'))
-            .unwrap_or(body);
+fn doctype_text(document: &Document, id: NodeId) -> String {
+    let doctype = document.doctype(id);
+    if doctype.public_id.is_none() && doctype.system_id.is_none() {
+        return format!("<!DOCTYPE {}>", doctype.name);
     }
-    let body = raw.strip_suffix('>').unwrap_or(raw);
-    body.strip_prefix("</")
-        .or(body.strip_prefix("<!"))
-        .or(body.strip_prefix('<'))
-        .unwrap_or(body)
+    format!(
+        "<!DOCTYPE {} \"{}\" \"{}\">",
+        doctype.name,
+        doctype.public_id.unwrap_or_default(),
+        doctype.system_id.unwrap_or_default()
+    )
 }
 
-fn doctype_text(raw: &str) -> String {
-    let body = raw.strip_suffix('>').unwrap_or(raw).get(9..).unwrap_or("");
-    let body = body.trim_matches(|c: char| c.is_ascii_whitespace());
-    let mut words = body.splitn(2, |c: char| c.is_ascii_whitespace());
-    let name = words.next().unwrap_or("").to_ascii_lowercase();
-    let rest = words.next().unwrap_or("").trim();
-    let upper = rest.to_ascii_uppercase();
-    let quoted: Vec<&str> = rest.split(['"', '\'']).skip(1).step_by(2).collect();
-    if upper.starts_with("PUBLIC") {
-        let public = quoted.first().copied().unwrap_or("");
-        let system = quoted.get(1).copied().unwrap_or("");
-        format!("<!DOCTYPE {name} \"{public}\" \"{system}\">")
-    } else if upper.starts_with("SYSTEM") {
-        let system = quoted.first().copied().unwrap_or("");
-        format!("<!DOCTYPE {name} \"\" \"{system}\">")
-    } else {
-        format!("<!DOCTYPE {name}>")
+/// The attribute name as the test files show it. ron keeps names as written, so the
+/// mapping of the standard for foreign elements lives here until something needs it.
+fn attribute_name(name: &str, namespace: Namespace) -> String {
+    let lower = name.to_ascii_lowercase();
+    if namespace == Namespace::Html {
+        return lower;
+    }
+    if namespace == Namespace::MathMl && lower == "definitionurl" {
+        return "definitionURL".to_owned();
+    }
+    if namespace == Namespace::Svg
+        && let Some(mixed) = SVG_ATTRIBUTES
+            .iter()
+            .find(|mixed| mixed.eq_ignore_ascii_case(&lower))
+    {
+        return (*mixed).to_owned();
+    }
+    match lower.as_str() {
+        "xlink:actuate" | "xlink:arcrole" | "xlink:href" | "xlink:role" | "xlink:show"
+        | "xlink:title" | "xlink:type" | "xml:lang" | "xml:space" | "xmlns:xlink" => {
+            lower.replacen(':', " ", 1)
+        }
+        _ => lower,
     }
 }
 
-fn normalize_newlines(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
-}
+const SVG_ATTRIBUTES: [&str; 58] = [
+    "attributeName",
+    "attributeType",
+    "baseFrequency",
+    "baseProfile",
+    "calcMode",
+    "clipPathUnits",
+    "diffuseConstant",
+    "edgeMode",
+    "filterUnits",
+    "glyphRef",
+    "gradientTransform",
+    "gradientUnits",
+    "kernelMatrix",
+    "kernelUnitLength",
+    "keyPoints",
+    "keySplines",
+    "keyTimes",
+    "lengthAdjust",
+    "limitingConeAngle",
+    "markerHeight",
+    "markerUnits",
+    "markerWidth",
+    "maskContentUnits",
+    "maskUnits",
+    "numOctaves",
+    "pathLength",
+    "patternContentUnits",
+    "patternTransform",
+    "patternUnits",
+    "pointsAtX",
+    "pointsAtY",
+    "pointsAtZ",
+    "preserveAlpha",
+    "preserveAspectRatio",
+    "primitiveUnits",
+    "refX",
+    "refY",
+    "repeatCount",
+    "repeatDur",
+    "requiredExtensions",
+    "requiredFeatures",
+    "specularConstant",
+    "specularExponent",
+    "spreadMethod",
+    "startOffset",
+    "stdDeviation",
+    "stitchTiles",
+    "surfaceScale",
+    "systemLanguage",
+    "tableValues",
+    "targetX",
+    "targetY",
+    "textLength",
+    "viewBox",
+    "viewTarget",
+    "xChannelSelector",
+    "yChannelSelector",
+    "zoomAndPan",
+];
 
 /// Writes a tree in the format of the test files. Adjacent text nodes count as one.
 fn serialize(document: &Document) -> String {
@@ -105,24 +168,24 @@ fn serialize(document: &Document) -> String {
                     Some((_, joined)) if adjoins => joined.push_str(&text),
                     pending => {
                         flush(pending, &mut out);
-                        *pending = Some((depth, text));
+                        *pending = (!text.is_empty()).then_some((depth, text));
                     }
                 }
             }
             NodeKind::Element => {
                 flush(&mut pending_text, &mut out);
-                writeln!(
-                    out,
-                    "| {indent}<{}>",
-                    document.name(id).to_ascii_lowercase()
-                )
-                .unwrap();
+                let prefix = match document.namespace(id) {
+                    Namespace::Html => "",
+                    Namespace::Svg => "svg ",
+                    Namespace::MathMl => "math ",
+                };
+                writeln!(out, "| {indent}<{prefix}{}>", document.local_name(id)).unwrap();
                 let mut attributes: Vec<(String, String)> = Vec::new();
                 for attribute in document.attributes(id) {
-                    let name = attribute.name.to_ascii_lowercase();
+                    let name = attribute_name(attribute.name, document.namespace(id));
                     if attributes.iter().all(|(other, _)| *other != name) {
                         let value = attribute.decoded_value();
-                        attributes.push((name, normalize_newlines(&value)));
+                        attributes.push((name, value.into_owned()));
                     }
                 }
                 attributes.sort();
@@ -132,12 +195,15 @@ fn serialize(document: &Document) -> String {
             }
             NodeKind::Comment => {
                 flush(&mut pending_text, &mut out);
-                let text = normalize_newlines(comment_text(document.text(id)));
-                writeln!(out, "| {indent}<!-- {text} -->").unwrap();
+                writeln!(out, "| {indent}<!-- {} -->", document.comment_text(id)).unwrap();
             }
             NodeKind::Doctype => {
                 flush(&mut pending_text, &mut out);
-                writeln!(out, "| {indent}{}", doctype_text(document.text(id))).unwrap();
+                writeln!(out, "| {indent}{}", doctype_text(document, id)).unwrap();
+            }
+            NodeKind::Fragment => {
+                flush(&mut pending_text, &mut out);
+                writeln!(out, "| {indent}content").unwrap();
             }
             NodeKind::Document => {}
         }
@@ -199,4 +265,5 @@ fn html5lib_tree_construction() {
     }
     assert!(total > 0, "no test cases found");
     assert_eq!(panics, 0);
+    assert!(passed >= PASSING_CASES, "only {passed} cases pass");
 }

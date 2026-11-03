@@ -89,7 +89,7 @@ fn print_tree(document: &Document) {
                     println!("{indent}  {} = {:?}", attribute.name, attribute.value);
                 }
             }
-            NodeKind::Document => {}
+            NodeKind::Document | NodeKind::Fragment => {}
             _ => println!("{indent}{:?}", document.text(id)),
         }
     }

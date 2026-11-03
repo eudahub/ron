@@ -14,7 +14,7 @@ fn show(document: &Document, id: NodeId, out: &mut String) {
             show_children(document, id, out);
             out.push(')');
         }
-        NodeKind::Document => show_children(document, id, out),
+        NodeKind::Document | NodeKind::Fragment => show_children(document, id, out),
         NodeKind::Doctype | NodeKind::Text | NodeKind::Comment => {
             write!(out, "{:?}", document.text(id)).unwrap();
         }
@@ -153,6 +153,20 @@ const CASES: &[(&str, &str)] = &[
     ("<p><span>a</p>b", r#"p(span("a")),"b""#),
     ("<nobr>a<nobr>b", r#"nobr("a"),nobr("b")"#),
     ("<object><b>a</object>c", r#"object(b("a")),"c""#),
+    // Misplaced table content goes in front of the table.
+    (
+        "<table>x<tr><td>y</table>",
+        r#""x",table(tbody(tr(td("y"))))"#,
+    ),
+    ("<table> <tr> </table>", r#"table(" ",tbody(tr(" ")))"#),
+    // Foreign content has its own rules: no raw text, self-closing tags, CDATA.
+    ("<svg><title><p>x</title></svg>", r#"svg(title(p("x")))"#),
+    ("<svg><![CDATA[<a>]]></svg>", r#"svg("<a>")"#),
+    ("<svg><p>x", r#"svg(),p("x")"#),
+    // A tag cut off by the end of the input does not count.
+    ("x<di", r#""x""#),
+    ("x<a href=\"y>z", r#""x""#),
+    ("<select><option>a<select>b", r#"select(option("a")),"b""#),
 ];
 
 const WHOLE_DOCUMENTS: &[(&str, &str)] = &[
@@ -175,6 +189,18 @@ const WHOLE_DOCUMENTS: &[(&str, &str)] = &[
     (
         "<head></head><title>late</title>x",
         r#"html(head(title("late")),body("x"))"#,
+    ),
+    (
+        "<frameset><frame></frameset>",
+        "html(head(),frameset(frame()))",
+    ),
+    (
+        "<template><tr><td>x</template>",
+        r#"html(head(template(tr(td("x")))),body())"#,
+    ),
+    (
+        "<script><!--<script></script>x</script>y",
+        r#"html(head(script("<!--<script></script>x")),body("y"))"#,
     ),
 ];
 

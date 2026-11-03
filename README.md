@@ -12,15 +12,17 @@ same for a page that arrives in pieces: call `feed` with each piece and `finish`
 end. After every `feed`, `document()` returns a valid tree of what is known so far, so a
 page can be shown before it has fully arrived.
 
-The tree follows the HTML tree construction rules, including implied elements, implied
-end tags and the repair of misnested formatting. Not implemented yet: moving misplaced
-table content in front of the table, `<template>` contents, and the separate rules of SVG
-and MathML. Character references stay as written in the source; `decoded_text` and
-`decoded_value` decode them when read.
+The tree follows the insertion modes of the HTML standard, including misplaced table
+content, `<template>` contents, frameset documents, SVG and MathML. Of the 1592 html5lib tree
+construction cases that apply, 1587 pass. The rest are `<selectedcontent>`, which copies the
+selected option, and a newline after `<pre>` written as a character reference. Scripting
+counts as disabled and scripts do not run. Character references stay as written in the
+source; `decoded_text` and `decoded_value` decode them when read. Attribute names in SVG and
+MathML keep the form they were written in.
 
 Nodes take 28 bytes each and refer to the source, which the document keeps; text and
 attributes are not copied. As a result text interrupted by an ignored tag stays as two
-adjacent text nodes, and names of unknown elements keep the case they were written in.
+adjacent text nodes; `name` keeps the case of unknown names and `local_name` lowercases them.
 
 At most 512 elements stay open, with further ones becoming siblings. Repairing misnested
 formatting can leave the tree deeper than that, so code walking it must not recurse. A
