@@ -3,7 +3,7 @@
 use ron::css::{
     BackgroundRepeat, BorderStyle, Color, ComputedStyle, Display, Float, FontStyle, LineHeight,
     ListStyleType, Size, Styles, Stylesheet, TextAlign, UNDERLINE, VerticalAlign, VerticalPosition,
-    Viewport, WhiteSpace, compute_styles, document_stylesheets,
+    Viewport, WhiteSpace, compute_styles, document_stylesheets, matches_media,
 };
 use ron::html::{Document, NodeId, NodeKind, parse};
 
@@ -533,6 +533,122 @@ fn floats_and_roots_become_blocks() {
     );
     let root = Page::new("<!DOCTYPE html><html t=h style='display:inline'>");
     assert_eq!(root.style("h").display, Display::Block);
+}
+
+#[test]
+fn media_conditions_can_be_ranges() {
+    let viewport = Viewport {
+        width: 1000.0,
+        height: 500.0,
+    };
+    for (condition, holds) in [
+        ("(width>=768px)", true),
+        ("(width>=1000px)", true),
+        ("(width>1000px)", false),
+        ("(width >= 1001px)", false),
+        ("(width<=1000px)", true),
+        ("(width<1000px)", false),
+        ("(width=1000px)", true),
+        ("(height<=400px)", false),
+        ("(768px<=width)", true),
+        ("(1001px<=width)", false),
+        ("(1001px>width)", true),
+        ("(900px<=width<=1100px)", true),
+        ("(900px<=width<1000px)", false),
+        ("(1100px>=width>=900px)", true),
+        ("(width>=48rem)", true),
+        ("(width>=63em)", false),
+        ("(width<=calc(62.5rem + 1px))", true),
+        ("(width<=calc(62.5rem - 0.02px))", false),
+        ("screen and (width>=768px)", true),
+        ("(width>=768px) and (width<=800px)", false),
+        ("not (width>=768px)", false),
+        ("print and (width>=768px)", false),
+    ] {
+        assert_eq!(matches_media(condition, viewport), holds, "{condition}");
+    }
+}
+
+#[test]
+fn media_conditions_that_make_no_sense_do_not_hold() {
+    let viewport = Viewport::default();
+    for condition in [
+        "(width>=)",
+        "(>=768px)",
+        "(width>=red)",
+        "(width>=calc(1px * 2))",
+        "(width>=calc(1px - ))",
+        "(color>=1px)",
+        "(width>=height)",
+        "(1px<=2px)",
+        "(1px<=width<=)",
+        "(<=>)",
+    ] {
+        assert!(!matches_media(condition, viewport), "{condition}");
+    }
+}
+
+#[test]
+fn media_knows_what_a_desktop_can_do() {
+    let viewport = Viewport::default();
+    assert!(matches_media("(hover:hover)", viewport));
+    assert!(matches_media("(pointer:fine)", viewport));
+    assert!(!matches_media("(hover:none)", viewport));
+    assert!(!matches_media("(pointer:coarse)", viewport));
+}
+
+#[test]
+fn rules_in_a_layer_are_read() {
+    assert_eq!(
+        styled("@layer base { p { color: red } }").style("a").color,
+        RED
+    );
+    assert_eq!(
+        styled("@layer { @layer inner { p { color: red } } }")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled("@media (min-width: 1px) { @layer base { p { color: red } } }")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled("@media (max-width: 1px) { @layer base { p { color: red } } }")
+            .style("a")
+            .color,
+        Color::BLACK
+    );
+    assert_eq!(
+        styled("@layer base { @media (max-width: 1px) { p { color: red } } }")
+            .style("a")
+            .color,
+        Color::BLACK
+    );
+}
+
+#[test]
+fn rules_outside_of_a_layer_win_whatever_their_selector() {
+    let outside_later = styled("@layer base { #j.k { color: red } } p { color: green }");
+    assert_eq!(outside_later.style("a").color, GREEN);
+    let outside_earlier = styled("p { color: green } @layer base { #j.k { color: red } }");
+    assert_eq!(outside_earlier.style("a").color, GREEN);
+}
+
+#[test]
+fn within_layers_selectors_and_order_decide() {
+    let by_selector = styled("@layer a { #j { color: red } } @layer b { p { color: green } }");
+    assert_eq!(by_selector.style("a").color, RED);
+    let by_order = styled("@layer a { p { color: red } } @layer b { p { color: green } }");
+    assert_eq!(by_order.style("a").color, GREEN);
+}
+
+#[test]
+fn a_layer_only_named_gives_no_rules_and_breaks_nothing() {
+    let page = styled("@layer a, b; p { color: red }");
+    assert_eq!(page.style("a").color, RED);
 }
 
 #[test]
