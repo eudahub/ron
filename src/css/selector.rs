@@ -103,6 +103,8 @@ pub struct Selector {
     pub pseudo_element: Option<Box<str>>,
     /// Counts of ids, classes and types, packed so that integer order is cascade order.
     pub specificity: u32,
+    /// Whether it stands in an `@layer`, which all rules outside of one come after.
+    pub in_layer: bool,
 }
 
 impl Selector {
@@ -298,6 +300,7 @@ fn compile_selector(tokens: &[CssToken], source: &str, depth: usize) -> Option<S
         compounds,
         pseudo_element,
         specificity,
+        in_layer: false,
     })
 }
 

@@ -27,6 +27,13 @@ pub struct StyleRule {
     pub media: Option<u32>,
 }
 
+/// What the at-rules around a rule say of it.
+#[derive(Clone, Copy, Default)]
+struct Place {
+    media: Option<u32>,
+    in_layer: bool,
+}
+
 /// A parsed stylesheet. It keeps its source, which declarations refer to.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Stylesheet {
@@ -53,7 +60,7 @@ impl Stylesheet {
             source: source.to_owned(),
             ..Self::default()
         };
-        stylesheet.read_rules(&tokens, source, None, 0, true);
+        stylesheet.read_rules(&tokens, source, Place::default(), 0, true);
         stylesheet.rules.shrink_to_fit();
         stylesheet
     }
@@ -107,7 +114,7 @@ impl Stylesheet {
         &mut self,
         tokens: &[CssToken],
         source: &str,
-        media: Option<u32>,
+        place: Place,
         depth: usize,
         top_level: bool,
     ) {
@@ -116,8 +123,8 @@ impl Stylesheet {
             match token.kind {
                 K::Whitespace | K::Comment | K::Semicolon => index += 1,
                 K::Cdo | K::Cdc if top_level => index += 1,
-                K::AtKeyword => index = self.read_at_rule(tokens, index, source, media, depth),
-                _ => index = self.read_style_rule(tokens, index, source, media),
+                K::AtKeyword => index = self.read_at_rule(tokens, index, source, place, depth),
+                _ => index = self.read_style_rule(tokens, index, source, place),
             }
         }
     }
@@ -127,7 +134,7 @@ impl Stylesheet {
         tokens: &[CssToken],
         start: usize,
         source: &str,
-        media: Option<u32>,
+        place: Place,
         depth: usize,
     ) -> usize {
         let keyword = unescape(&tokens[start].text(source)[1..]).to_ascii_lowercase();
@@ -144,13 +151,25 @@ impl Stylesheet {
             let condition = source_of(prelude, source).trim().into();
             let index = u32::try_from(self.media_queries.len()).unwrap_or(u32::MAX);
             self.media_queries.push(condition);
-            self.media_parents.push(media);
+            self.media_parents.push(place.media);
             let inner = &tokens[block + 1..end.min(tokens.len())];
-            self.read_rules(inner, source, Some(index), depth + 1, false);
+            let place = Place {
+                media: Some(index),
+                ..place
+            };
+            self.read_rules(inner, source, place, depth + 1, false);
         } else if keyword == "supports" && depth < MAX_AT_RULE_NESTING {
             // Conditions are not evaluated yet; what cannot be used is ignored later anyway.
             let inner = &tokens[block + 1..end.min(tokens.len())];
-            self.read_rules(inner, source, media, depth + 1, false);
+            self.read_rules(inner, source, place, depth + 1, false);
+        } else if keyword == "layer" && depth < MAX_AT_RULE_NESTING {
+            // The layers stay in the order they come in, whatever order `@layer a, b;` gives them.
+            let inner = &tokens[block + 1..end.min(tokens.len())];
+            let place = Place {
+                in_layer: true,
+                ..place
+            };
+            self.read_rules(inner, source, place, depth + 1, false);
         }
         end + 1
     }
@@ -182,21 +201,24 @@ impl Stylesheet {
         tokens: &[CssToken],
         start: usize,
         source: &str,
-        media: Option<u32>,
+        place: Place,
     ) -> usize {
         let (_, block) = find_prelude_end(tokens, start, false);
         let Some(block) = block else {
             return tokens.len();
         };
         let end = find_block_end(tokens, block);
-        if let Some(selectors) = Selector::parse_list(&tokens[start..block], source) {
+        if let Some(mut selectors) = Selector::parse_list(&tokens[start..block], source) {
             let inner = &tokens[block + 1..end.min(tokens.len())];
             let declarations = read_declarations(inner, source);
             if !declarations.is_empty() {
+                for selector in &mut selectors {
+                    selector.in_layer = place.in_layer;
+                }
                 self.rules.push(StyleRule {
                     selectors,
                     declarations,
-                    media,
+                    media: place.media,
                 });
             }
         }

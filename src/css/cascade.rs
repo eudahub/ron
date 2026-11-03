@@ -280,7 +280,8 @@ impl<'a> RuleIndex<'a> {
         let entry = IndexEntry {
             selector,
             rule,
-            specificity: selector.specificity,
+            // Above any counts, so that a rule outside of a layer wins whatever its selector.
+            specificity: selector.specificity | (u32::from(!selector.in_layer) << 31),
         };
         let simple = selector.compounds.first().map_or(&[][..], |c| &c.simple);
         let folded = |name: &str| {

@@ -38,7 +38,9 @@ needed a clone, and `is_formatting_limited` reports it.
 declarations. It accepts every input: as CSS Syntax requires, an error drops one rule or
 declaration, and the input ending inside a block closes it. Values stay as written in the
 source. `@media` conditions and `@import` targets are kept but not evaluated, and `@supports`
-content is read as if its condition held. Nested style rules are skipped.
+content is read as if its condition held. Rules in `@layer` come before all rules outside of one,
+and among themselves stay in the order they are written, whatever `@layer a, b;` says; `!important`
+does not turn this around. Nested style rules are skipped.
 
 `grammars/css.ag` holds the tokens and an LALR(1) grammar for selector lists, which decides
 validity, since one invalid selector voids its whole rule. `ron::css::matches` tests an
