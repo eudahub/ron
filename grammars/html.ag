@@ -1,0 +1,39 @@
+// HTML as a flat stream of tags and text: real pages do not nest properly, so
+// nesting is left to a tree builder. The rules accept every valid UTF-8 input and
+// stay in the DFA subset (no lexer classes, no lazy quantifiers) to allow static
+// export. Comment and raw-text bodies are scanned by the tokenizer.
+grammar Html;
+
+options { parser = LALR; lookahead = 1; ast = explicit; }
+
+node document : items=item* EOF;
+inline item
+    : TEXT
+    | STRAY_LT
+    | COMMENT_OPEN
+    | DECLARATION
+    | START_TAG
+    | END_TAG
+    ;
+
+fragment WS : [ \t\r\n\f];
+fragment TAG_NAME : [a-zA-Z] ~[ \t\r\n\f/>]*;
+fragment ATTR_NAME : '='? ~[ \t\r\n\f/>=]+ | '=';
+fragment DOUBLE_QUOTED : '"' ~["]* '"'?;
+fragment SINGLE_QUOTED : '\'' ~[']* '\''?;
+fragment UNQUOTED : ~[ \t\r\n\f>"'] ~[ \t\r\n\f>]*;
+fragment ATTR : ATTR_NAME (WS* '=' WS* (DOUBLE_QUOTED | SINGLE_QUOTED | UNQUOTED)?)?;
+fragment TAG_REST : (WS | '/' | ATTR)*;
+
+// The closing '>' is optional because only the end of input can stop a tag early.
+START_TAG : '<' TAG_NAME TAG_REST '>'?;
+END_TAG : '</' TAG_NAME TAG_REST '>'?;
+COMMENT_OPEN : '<!--';
+DECLARATION
+    : '<!' (~[\->] ~[>]* | '-' (~[\->] ~[>]*)?)? '>'?
+    | '<?' ~[>]* '>'?
+    | '</' ~[a-zA-Z>] ~[>]* '>'?
+    | '</>'
+    ;
+STRAY_LT : '<';
+TEXT : ~[<]+;

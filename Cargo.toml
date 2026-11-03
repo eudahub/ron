@@ -1,0 +1,19 @@
+[package]
+name = "ron"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "ron"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ron-dump"
+path = "src/bin/ron_dump.rs"
+
+[dependencies]
+agas-runtime = { git = "https://github.com/parstools/borsuk.git", rev = "8f65166" }
+
+[lints.rust]
+unsafe_code = "forbid"
