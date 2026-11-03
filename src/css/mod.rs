@@ -8,6 +8,7 @@ mod style;
 mod stylesheet;
 mod tokenizer;
 mod values;
+mod variables;
 
 // The LR tables validate selectors; the reductions are not used because the stylesheet
 // parser compiles a selector from its tokens once it is known to be valid.
@@ -32,3 +33,4 @@ pub use style::{ComputedStyle, LineHeight, Sides, Size, VerticalPosition};
 pub use stylesheet::{Declaration, StyleRule, Stylesheet};
 pub use tokenizer::{CssToken, CssTokenKind, tokenize};
 pub use values::Color;
+pub use variables::CustomProperties;

@@ -670,3 +670,177 @@ fn rules_on_names_not_in_the_page_do_not_get_in_the_way() {
         [RED, BLACK]
     );
 }
+
+#[test]
+fn variables_give_their_values() {
+    let page = styled(
+        ":root{--c:red;--w:7px;--s:1px solid blue} p{color:var(--c);margin-left:var(--w);\
+         border:var(--s);background:var(--c)}",
+    );
+    let style = page.style("a");
+    assert_eq!(style.color, RED);
+    assert_eq!(style.margin.left, Size::Px(7.0));
+    assert_eq!(style.background_color, RED);
+    assert_eq!(style.border_style.left, BorderStyle::Solid);
+    assert_eq!(style.border_color.left, BLUE);
+}
+
+#[test]
+fn variables_inherit_and_can_change_on_the_way_down() {
+    let page = Page::new(
+        "<!DOCTYPE html><style>:root{--c:red} div{--c:blue} p,span,i,div{color:var(--c)}</style>\
+         <p t=outer>x</p><div t=div><p t=inner>y<span t=deep>z</span></p></div>",
+    );
+    assert_eq!(page.style("outer").color, RED);
+    assert_eq!(page.style("div").color, BLUE);
+    assert_eq!(page.style("inner").color, BLUE);
+    assert_eq!(page.style("deep").color, BLUE);
+}
+
+#[test]
+fn a_variable_can_be_set_on_the_element_itself_and_in_its_style() {
+    assert_eq!(styled("p{--c:red;color:var(--c)}").style("a").color, RED);
+    let page = Page::new(
+        "<!DOCTYPE html><style>p{--c:red;color:var(--c)}</style>\
+         <p t=a style='--c:blue'>x</p><p t=b style='color:var(--c)'>y</p>",
+    );
+    assert_eq!(page.style("a").color, BLUE);
+    assert_eq!(page.style("b").color, RED);
+}
+
+#[test]
+fn fallbacks_and_missing_variables() {
+    assert_eq!(styled("p{color:var(--none,red)}").style("a").color, RED);
+    assert_eq!(
+        styled("p{color:var(--none,var(--also-none,rgb(255,0,0)))}")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled("div{color:blue} p{color:var(--none)}")
+            .style("a")
+            .color,
+        BLUE
+    );
+    // Names go by case.
+    assert_eq!(
+        styled("p{--C:red;color:blue;color:var(--c,green)}")
+            .style("a")
+            .color,
+        GREEN
+    );
+    // The last of a property counts, also among those with variables.
+    assert_eq!(
+        styled("p{--c:red;color:var(--c);color:blue}")
+            .style("a")
+            .color,
+        BLUE
+    );
+    assert_eq!(
+        styled("p{--c:red;color:blue;color:var(--c)}")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled("p{--c:red;--c:blue;color:var(--c)}")
+            .style("a")
+            .color,
+        BLUE
+    );
+    assert_eq!(
+        styled("p{--c:red!important;--c:blue;color:var(--c)}")
+            .style("a")
+            .color,
+        RED
+    );
+}
+
+#[test]
+fn rules_with_variables_keep_their_place_in_the_cascade() {
+    assert_eq!(
+        styled(":root{--c:red} p{color:blue} p{color:var(--c)}")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled(":root{--c:red} p{color:var(--c)} p{color:blue}")
+            .style("a")
+            .color,
+        BLUE
+    );
+    assert_eq!(
+        styled(":root{--c:red} #j{color:var(--c)} p{color:blue}")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled(":root{--c:red} p{color:var(--c)!important} #j{color:blue}")
+            .style("a")
+            .color,
+        RED
+    );
+}
+
+#[test]
+fn variables_refer_to_each_other() {
+    assert_eq!(
+        styled(":root{--a:var(--b);--b:red} p{color:var(--a)}")
+            .style("a")
+            .color,
+        RED
+    );
+    assert_eq!(
+        styled(":root{--a:red} div{--b:var(--a)} p{--a:blue;color:var(--b)}")
+            .style("a")
+            .color,
+        RED
+    );
+}
+
+#[test]
+fn what_only_looks_like_a_variable_is_left_alone() {
+    let page = styled("p{--x:'var(--y)';font-family:'var(--z)'}");
+    assert!(page.style("a").font_family.contains("var(--z)"));
+    let customs = page.style("a").custom_properties.as_ref().unwrap();
+    assert_eq!(customs.get("--x"), Some("'var(--y)'"));
+    assert_eq!(styled("p{color:var(c,red)}").style("a").color, Color::BLACK);
+}
+
+#[test]
+fn circles_and_floods_of_variables_end() {
+    let start = std::time::Instant::now();
+    assert_eq!(
+        styled(
+            "div{color:blue} :root{--a:var(--b);--b:var(--a);--self:var(--self)}\
+                p{color:var(--a)}"
+        )
+        .style("a")
+        .color,
+        BLUE
+    );
+    // Each doubles the one before.
+    let mut flood = String::from(":root{--v0:red;");
+    for level in 1..60 {
+        let last = level - 1;
+        flood += &format!("--v{level}:var(--v{last}) var(--v{last});");
+    }
+    flood += "} p{color:var(--v59);margin-left:7px}";
+    assert_eq!(styled(&flood).style("a").margin.left, Size::Px(7.0));
+    // Fallbacks in fallbacks.
+    let deep = format!(
+        "p{{color:{}red{}}}",
+        "var(--n,".repeat(5000),
+        ")".repeat(5000)
+    );
+    let _ = styled(&deep).style("a").color;
+    // A new set of values for each of many elements.
+    let many: String = (0..3000)
+        .map(|i| format!("<p style='--x{i}:{}'>", "y".repeat(1000)))
+        .collect();
+    let _ = Page::new(&format!("<!DOCTYPE html>{many}"));
+    assert!(start.elapsed().as_secs() < 20);
+}

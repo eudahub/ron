@@ -15,8 +15,9 @@ use super::selector::{
     Combinator, ElementNames, MatchContext, PseudoClass, Selector, SimpleSelector, TypeSelector,
 };
 use super::style::{ComputedStyle, blockified, compute};
-use super::stylesheet::Stylesheet;
+use super::stylesheet::{Declaration, StyleRule, Stylesheet};
 use super::values::{Color, Length, Unit, parse_length};
+use super::variables::{CustomProperties, merged, substitute, uses_variables};
 
 /// The browser's own defaults, following the rendering section of the HTML standard.
 const DEFAULT_STYLES: &str = include_str!("default.css");
@@ -26,6 +27,8 @@ const QUIRKS_STYLES: &str = include_str!("quirks.css");
 
 /// Distinct styles beyond this reuse the parent's, so that hostile pages stay small.
 const MAX_STYLES: usize = 1 << 20;
+/// What all sets of custom properties of a page may take; beyond it, elements only inherit.
+const MAX_CUSTOM_PROPERTY_BYTES: usize = 64 * 1024 * 1024;
 
 static DEFAULT_SHEET: LazyLock<Stylesheet> = LazyLock::new(|| Stylesheet::parse(DEFAULT_STYLES));
 static QUIRKS_SHEET: LazyLock<Stylesheet> = LazyLock::new(|| Stylesheet::parse(QUIRKS_STYLES));
@@ -354,6 +357,8 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
                 .collect(),
         );
     }
+    let mut variable_rules: HashMap<u32, VariableRule<'_>> = HashMap::new();
+    let mut custom_budget = MAX_CUSTOM_PROPERTY_BYTES;
     let names = ElementNames::of_document(document);
     let words = names.words(quirks);
     let mut index = RuleIndex::default();
@@ -389,6 +394,9 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             }
             let number = u32::try_from(rules.len()).unwrap_or(u32::MAX);
             rules.push((ORIGIN_AUTHOR, declarations));
+            if let Some(variable_rule) = variable_rule(sheet, rule) {
+                variable_rules.insert(number, variable_rule);
+            }
             for selector in &rule.selectors {
                 add_selector(
                     &mut index,
@@ -472,32 +480,74 @@ pub fn compute_styles<Sheet: Borrow<Stylesheet>>(
             .find(|attribute| attribute.name.eq_ignore_ascii_case("style"))
             .filter(|attribute| attribute.value.is_some())
             .map(|attribute| attribute.decoded_value());
-        let mut inline = Vec::new();
-        if let Some(text) = style_attribute {
-            let sheet = Stylesheet::parse_declarations(&text);
-            for declaration in sheet.declarations() {
-                compile(
-                    &declaration.name,
-                    sheet.value(declaration),
-                    declaration.important,
-                    &mut inline,
+        let inline_sheet = style_attribute.map(|text| Stylesheet::parse_declarations(&text));
+        let inline_declarations: Vec<RawDeclaration<'_>> = inline_sheet
+            .as_ref()
+            .map(|sheet| raw_declarations(sheet, sheet.declarations()))
+            .unwrap_or_default();
+        // Custom properties come first, as all else can refer to them.
+        let parent_customs = result.styles[parent_style as usize]
+            .custom_properties
+            .clone();
+        let mut declared_customs: Vec<(&str, &str)> = Vec::new();
+        for important in [false, true] {
+            for &(_, rule) in &matched {
+                if let Some(variable_rule) = variable_rules.get(&rule) {
+                    add_customs(
+                        &mut declared_customs,
+                        &variable_rule.declarations,
+                        important,
+                    );
+                }
+            }
+            add_customs(&mut declared_customs, &inline_declarations, important);
+        }
+        let customs = if declared_customs.is_empty() {
+            parent_customs
+        } else {
+            merged(
+                parent_customs.as_ref(),
+                &declared_customs,
+                &mut custom_budget,
+            )
+        };
+        let mut with_variables: HashMap<u32, Vec<Compiled>> = HashMap::new();
+        for &(_, rule) in &matched {
+            if let Some(variable_rule) = variable_rules.get(&rule)
+                && variable_rule.uses_variables
+            {
+                with_variables.insert(
+                    rule,
+                    compile_raw(&variable_rule.declarations, customs.as_ref()),
                 );
             }
         }
+        let inline = compile_raw(&inline_declarations, customs.as_ref());
         let mut cascaded: [Option<&Value>; PROPERTY_COUNT] = [None; PROPERTY_COUNT];
-        apply_origin(&mut cascaded, &matched, &rules, ORIGIN_DEFAULT, false);
+        let apply_rules = |cascaded: &mut _, origin, important| {
+            apply_origin(
+                cascaded,
+                &matched,
+                &rules,
+                &with_variables,
+                origin,
+                important,
+            );
+        };
+        apply_rules(&mut cascaded, ORIGIN_DEFAULT, false);
         apply_list(&mut cascaded, &hints, false);
-        apply_origin(&mut cascaded, &matched, &rules, ORIGIN_AUTHOR, false);
+        apply_rules(&mut cascaded, ORIGIN_AUTHOR, false);
         apply_list(&mut cascaded, &inline, false);
-        apply_origin(&mut cascaded, &matched, &rules, ORIGIN_AUTHOR, true);
+        apply_rules(&mut cascaded, ORIGIN_AUTHOR, true);
         apply_list(&mut cascaded, &inline, true);
-        apply_origin(&mut cascaded, &matched, &rules, ORIGIN_DEFAULT, true);
+        apply_rules(&mut cascaded, ORIGIN_DEFAULT, true);
         let mut style = compute(
             &result.styles[parent_style as usize],
             &cascaded,
             root_font_size,
             viewport,
         );
+        style.custom_properties = customs;
         if parent == document.root() {
             style.display = blockified(style.display);
             root_font_size = Some(style.font_size);
@@ -546,15 +596,101 @@ fn apply_origin<'a>(
     cascaded: &mut [Option<&'a Value>; PROPERTY_COUNT],
     matched: &[(u32, u32)],
     rules: &[(u8, &'a [Compiled])],
+    with_variables: &'a HashMap<u32, Vec<Compiled>>,
     origin: u8,
     important: bool,
 ) {
     for &(_, rule) in matched {
         let (rule_origin, declarations) = rules[rule as usize];
         if rule_origin == origin {
+            let declarations = with_variables
+                .get(&rule)
+                .map_or(declarations, |list| list.as_slice());
             apply_list(cascaded, declarations, important);
         }
     }
+}
+
+/// A declaration as written, for when it can only be read for one element at a time.
+#[derive(Clone, Copy)]
+struct RawDeclaration<'a> {
+    name: &'a str,
+    value: &'a str,
+    important: bool,
+}
+
+/// A rule with custom properties or `var()` in it.
+struct VariableRule<'a> {
+    /// All of its declarations in order, as the last of a property wins.
+    declarations: Vec<RawDeclaration<'a>>,
+    uses_variables: bool,
+}
+
+fn raw_declarations<'a>(
+    sheet: &'a Stylesheet,
+    declarations: &'a [Declaration],
+) -> Vec<RawDeclaration<'a>> {
+    declarations
+        .iter()
+        .map(|declaration| RawDeclaration {
+            name: &declaration.name,
+            value: sheet.value(declaration),
+            important: declaration.important,
+        })
+        .collect()
+}
+
+fn variable_rule<'a>(sheet: &'a Stylesheet, rule: &'a StyleRule) -> Option<VariableRule<'a>> {
+    let declarations = raw_declarations(sheet, &rule.declarations);
+    let is_custom = |declaration: &RawDeclaration<'_>| declaration.name.starts_with("--");
+    let uses = declarations
+        .iter()
+        .any(|declaration| !is_custom(declaration) && uses_variables(declaration.value));
+    (uses || declarations.iter().any(is_custom)).then_some(VariableRule {
+        declarations,
+        uses_variables: uses,
+    })
+}
+
+fn add_customs<'a>(
+    out: &mut Vec<(&'a str, &'a str)>,
+    declarations: &[RawDeclaration<'a>],
+    important: bool,
+) {
+    for declaration in declarations {
+        if declaration.important == important && declaration.name.starts_with("--") {
+            out.push((declaration.name, declaration.value));
+        }
+    }
+}
+
+/// Reads declarations for one element. One whose `var()` has no value counts as not there.
+fn compile_raw(
+    declarations: &[RawDeclaration<'_>],
+    customs: Option<&CustomProperties>,
+) -> Vec<Compiled> {
+    let mut compiled = Vec::new();
+    for declaration in declarations {
+        if declaration.name.starts_with("--") {
+            continue;
+        }
+        if !uses_variables(declaration.value) {
+            compile(
+                declaration.name,
+                declaration.value,
+                declaration.important,
+                &mut compiled,
+            );
+        } else if let Some(value) = substitute(declaration.value, customs) {
+            compile(
+                declaration.name,
+                &value,
+                declaration.important,
+                &mut compiled,
+            );
+        }
+    }
+    compiled
 }
 
 fn apply_list<'a>(

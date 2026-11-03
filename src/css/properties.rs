@@ -1,6 +1,7 @@
 //! The properties ron understands, and reading declarations into them. Shorthands expand
 //! here. A value that is not understood drops its declaration, as CSS requires, which also
-//! means that `var()` and `calc()` are ignored for now.
+//! means that `calc()` is ignored for now. Any `var()` in a declaration has been replaced by now;
+//! see `variables.rs`.
 
 use std::sync::Arc;
 
@@ -172,7 +173,7 @@ pub(super) fn compile(name: &str, value: &str, important: bool, out: &mut Vec<Co
 
 fn compile_inner(name: &str, value: &str, important: bool, out: &mut Vec<Compiled>) -> bool {
     let text = value.trim();
-    if text.contains("var(") || text.contains("calc(") {
+    if text.contains("calc(") {
         return false;
     }
     let mut push = |prop: Prop, value: Value| {

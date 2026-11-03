@@ -9,6 +9,7 @@ use super::properties::{
     Visibility, WhiteSpace,
 };
 use super::values::{Color, Length, Unit};
+use super::variables::CustomProperties;
 
 /// A size in CSS pixels or relative to a box that only layout knows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,6 +61,7 @@ impl<T: Copy> Sides<T> {
 pub struct ComputedStyle {
     // Inherited.
     pub color: Color,
+    pub custom_properties: Option<CustomProperties>,
     pub font_family: Arc<str>,
     pub font_size: f32,
     pub font_style: FontStyle,
@@ -113,6 +115,7 @@ impl ComputedStyle {
     pub fn initial() -> Self {
         Self {
             color: Color::BLACK,
+            custom_properties: None,
             font_family: "serif".into(),
             font_size: 16.0,
             font_style: FontStyle::Normal,
@@ -159,6 +162,7 @@ impl ComputedStyle {
     fn inheriting(parent: &Self) -> Self {
         Self {
             color: parent.color,
+            custom_properties: parent.custom_properties.clone(),
             font_family: parent.font_family.clone(),
             font_size: parent.font_size,
             font_style: parent.font_style,
