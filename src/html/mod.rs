@@ -17,6 +17,6 @@ mod html_parser;
 pub use attributes::{Attribute, Attributes, attributes};
 pub use doctype::Doctype;
 pub use dom::{Children, Descendants, Document, ElementAttributes, Namespace, NodeId, NodeKind};
-pub use parser::{Parser, parse};
+pub use parser::{Parser, parse, parse_owned};
 pub use tag::Tag;
 pub use tokenizer::{StreamTokenizer, Token, TokenKind, Tokenizer, tag_name};

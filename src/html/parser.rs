@@ -2197,8 +2197,25 @@ fn is_table_section(tag: Tag) -> bool {
 /// Parses a complete document.
 #[must_use]
 pub fn parse(source: &str) -> Document {
-    let mut parser = Parser::with_capacity(source.len());
-    parser.feed(source);
+    parse_owned(source.to_owned())
+}
+
+/// Parses a whole document that is not needed elsewhere, so that its source need not be copied.
+#[must_use]
+pub fn parse_owned(source: String) -> Document {
+    let mut parser = Parser::new();
+    if source.len() > MAX_SOURCE_BYTES {
+        parser.truncated = true;
+    } else {
+        // Nodes are a little more than what starts with `<`. Knowing it from the start saves the
+        // copies of a growing table, which at the end take up three times its size at once.
+        let tags = source.bytes().filter(|&byte| byte == b'<').count();
+        parser
+            .document
+            .reserve_nodes(tags.saturating_add(tags / 4).saturating_add(16));
+        parser.document.source = source;
+        parser.process_tokens();
+    }
     parser.finish();
     parser.into_document()
 }

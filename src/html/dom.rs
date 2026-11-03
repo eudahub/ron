@@ -221,6 +221,10 @@ impl Document {
         true
     }
 
+    pub(super) fn reserve_nodes(&mut self, count: usize) {
+        self.nodes.reserve_exact(count);
+    }
+
     pub(super) fn shrink_to_fit(&mut self) {
         self.source.shrink_to_fit();
         self.nodes.shrink_to_fit();
