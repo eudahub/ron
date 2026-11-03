@@ -111,7 +111,7 @@ macro_rules! properties {
 properties! {
     Display "display" Float "float" Clear "clear" Position "position"
     Top "top" Right "right" Bottom "bottom" Left "left"
-    Color "color" BackgroundColor "background-color" BackgroundImage "background-image"
+    Color "color" Fill "fill" BackgroundColor "background-color" BackgroundImage "background-image"
     BackgroundRepeat "background-repeat" BackgroundPositionX "background-position-x"
     BackgroundPositionY "background-position-y"
     FontFamily "font-family" FontSize "font-size" FontStyle "font-style" FontWeight "font-weight"
@@ -391,6 +391,8 @@ fn parse_longhand(prop: Prop, text: &str) -> Option<Value> {
         | P::BorderRightColor
         | P::BorderBottomColor
         | P::BorderLeftColor => parse_color_value(text),
+        P::Fill if text.eq_ignore_ascii_case("none") => Some(Value::Color(Color::TRANSPARENT)),
+        P::Fill => parse_color_value(text),
         P::BackgroundImage | P::ListStyleImage => {
             empty("none").or_else(|| parse_url(text).map(Value::Url))
         }

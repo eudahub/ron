@@ -106,6 +106,9 @@ pub struct ComputedStyle {
     /// carries them down to its text.
     pub text_decoration: u8,
     pub background_color: Color,
+    /// What a style sheet says of the inside of SVG shapes, transparent for `none`. Whatever is
+    /// left to come from the parent or from the attributes of the SVG is for what draws it.
+    pub fill: Option<Color>,
     pub background_image: Option<Arc<str>>,
     pub background_repeat: BackgroundRepeat,
     /// Where the image goes. A percentage aligns that point of the image with that point of
@@ -183,6 +186,7 @@ impl ComputedStyle {
             vertical_align: VerticalPosition::Keyword(VerticalAlign::Baseline),
             text_decoration: 0,
             background_color: Color::TRANSPARENT,
+            fill: None,
             background_image: None,
             background_repeat: BackgroundRepeat::Repeat,
             background_position_x: Size::Percent(0.0),
@@ -500,6 +504,13 @@ fn apply(
             V::Initial => style.background_color = initial.background_color,
             V::CurrentColor => style.background_color = style.color,
             V::Color(color) => style.background_color = *color,
+            _ => {}
+        },
+        P::Fill => match value {
+            V::Inherit => style.fill = parent.fill,
+            V::Initial => style.fill = initial.fill,
+            V::CurrentColor => style.fill = Some(style.color),
+            V::Color(color) => style.fill = Some(*color),
             _ => {}
         },
         P::BackgroundImage => match value {
