@@ -1,7 +1,9 @@
 //! Stylesheets, read as CSS Syntax requires: errors drop one rule or declaration, and
 //! the input ending inside a block closes it.
 
-use super::fontface::{FontFace, parse_family, parse_italic, parse_sources, parse_weight};
+use super::fontface::{
+    FontFace, parse_family, parse_italic, parse_sources, parse_unicode_range, parse_weight,
+};
 use super::media::{Viewport, matches_media};
 use super::selector::Selector;
 use super::tokenizer::{CssToken, CssTokenKind as K, tokenize, unescape};
@@ -195,6 +197,7 @@ impl Stylesheet {
         }
         let (mut family, mut sources) = (None, Vec::new());
         let (mut weight, mut italic) = ((400, 400), false);
+        let mut unicode_range = Vec::new();
         for declaration in read_declarations(tokens, source) {
             let value = source
                 .get(declaration.value_start as usize..declaration.value_end as usize)
@@ -204,6 +207,7 @@ impl Stylesheet {
                 "src" => sources = parse_sources(value),
                 "font-weight" => weight = parse_weight(value).unwrap_or(weight),
                 "font-style" => italic = parse_italic(value),
+                "unicode-range" => unicode_range = parse_unicode_range(value),
                 _ => {}
             }
         }
@@ -215,6 +219,7 @@ impl Stylesheet {
                 sources,
                 weight,
                 italic,
+                unicode_range,
                 media: place.media,
             });
         }

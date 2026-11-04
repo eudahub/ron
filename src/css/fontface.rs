@@ -25,6 +25,8 @@ pub struct FontFace {
     /// The lightest and the boldest weight that it covers, which are the same unless it varies.
     pub weight: (u16, u16),
     pub italic: bool,
+    /// Which characters it is for, and all of them if this is empty.
+    pub unicode_range: Vec<(u32, u32)>,
     /// Index into [`super::Stylesheet::media_queries`] of the condition around the rule.
     pub media: Option<u32>,
 }
@@ -140,6 +142,30 @@ pub(super) fn parse_italic(text: &str) -> bool {
     split_words(text).first().is_some_and(|word| {
         word.eq_ignore_ascii_case("italic") || word.eq_ignore_ascii_case("oblique")
     })
+}
+
+/// `U+26`, `U+0-7F` and `U+4??`, of which what is wrong is left out.
+pub(super) fn parse_unicode_range(text: &str) -> Vec<(u32, u32)> {
+    let hex = |digits: &str| u32::from_str_radix(digits, 16).ok();
+    split_commas(text)
+        .into_iter()
+        .filter_map(|part| {
+            let part = part.trim();
+            let digits = part
+                .strip_prefix("U+")
+                .or_else(|| part.strip_prefix("u+"))?;
+            if digits.contains('?') {
+                return Some((
+                    hex(&digits.replace('?', "0"))?,
+                    hex(&digits.replace('?', "F"))?,
+                ));
+            }
+            Some(match digits.split_once('-') {
+                Some((low, high)) => (hex(low)?, hex(high)?),
+                None => (hex(digits)?, hex(digits)?),
+            })
+        })
+        .collect()
 }
 
 pub(super) fn parse_family(text: &str) -> Option<Box<str>> {

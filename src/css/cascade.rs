@@ -466,6 +466,12 @@ impl Styles {
             .any(|style| (width && style.uses_view_width) || (height && style.uses_view_height))
     }
 
+    /// All the styles of the document, each once.
+    #[must_use]
+    pub fn distinct(&self) -> &[ComputedStyle] {
+        &self.styles
+    }
+
     /// How many distinct styles the document has.
     #[must_use]
     pub fn distinct_count(&self) -> usize {
